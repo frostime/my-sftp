@@ -1,0 +1,43 @@
+# SSH Config Example for my-sftp
+# Save this file to:
+#   - Unix/Linux/macOS: ~/.ssh/config
+#   - Windows: %USERPROFILE%\.ssh\config
+
+# Production server with key authentication
+Host prod
+    HostName 192.168.1.100
+    User admin
+    Port 22
+    IdentityFile ~/.ssh/prod_rsa
+    PreferredAuthentications publickey
+
+# Development server
+Host dev
+    HostName dev.example.com
+    User developer
+    IdentityFile ~/.ssh/dev_key
+
+# Legacy server with custom port
+Host legacy
+    HostName 10.0.0.50
+    User root
+    Port 2222
+    # No IdentityFile = password authentication
+
+# Short alias for frequently accessed server
+Host myserver
+    HostName 203.114.66.94
+    User myuser
+    IdentityFile ~/.ssh/id_rsa
+
+# Using domain name
+Host example
+    HostName sftp.example.com
+    User ftpuser
+    Port 22
+
+# Notes:
+# 1. Lines starting with # are comments
+# 2. Use 'my-sftp <Host>' to connect, e.g., 'my-sftp prod'
+# 3. Command line arguments override config file settings
+# 4. IdentityFile paths starting with ~ will be expanded to home directory
