@@ -298,8 +298,11 @@ func (c *Client) Stat(remotePath string) (os.FileInfo, error) {
 }
 
 // ListCompletion 获取路径补全候选列表
+// 返回基于用户输入prefix的完整候选路径（保持prefix的格式：绝对/相对）
 func (c *Client) ListCompletion(prefix string) []string {
-	dir, partial := path.Split(c.resolvePath(prefix))
+	// 解析目录和部分文件名
+	resolvedPath := c.resolvePath(prefix)
+	dir, partial := path.Split(resolvedPath)
 	if dir == "" {
 		dir = c.workDir
 	}
@@ -309,22 +312,20 @@ func (c *Client) ListCompletion(prefix string) []string {
 		return nil
 	}
 
+	// 提取用户输入的目录前缀部分
+	userDir, _ := path.Split(prefix)
+
 	var matches []string
 	for _, file := range files {
 		name := file.Name()
-		if strings.HasPrefix(name, partial) {
-			fullPath := path.Join(dir, name)
-			// 如果是目录，添加尾部斜杠
+		// 不区分大小写匹配
+		if strings.HasPrefix(strings.ToLower(name), strings.ToLower(partial)) {
+			// 构建候选项：保留用户输入的路径前缀格式
+			candidate := userDir + name
 			if file.IsDir() {
-				fullPath += "/"
+				candidate += "/"
 			}
-			// 返回相对路径或绝对路径
-			if strings.HasPrefix(prefix, "/") {
-				matches = append(matches, fullPath)
-			} else {
-				rel, _ := filepath.Rel(c.workDir, fullPath)
-				matches = append(matches, rel)
-			}
+			matches = append(matches, candidate)
 		}
 	}
 

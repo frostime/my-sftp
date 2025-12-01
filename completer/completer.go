@@ -120,25 +120,35 @@ func (c *Completer) completeRemotePath(prefix string) [][]rune {
 		return nil
 	}
 
-	// 如果只有一个匹配，直接返回完整路径
+	// 如果只有一个匹配，返回需要补全的后缀部分
 	if len(candidates) == 1 {
+		// 只返回未输入的部分
+		if len(candidates[0]) > len(prefix) {
+			suffix := candidates[0][len(prefix):]
+			return [][]rune{[]rune(suffix)}
+		}
 		return [][]rune{[]rune(candidates[0])}
 	}
 
 	// 多个匹配：计算公共前缀
 	common := longestCommonPrefix(candidates)
 	if len(common) > len(prefix) {
-		// 可以补全更多内容
-		return [][]rune{[]rune(common)}
+		// 可以补全更多内容，返回差异部分
+		suffix := common[len(prefix):]
+		return [][]rune{[]rune(suffix)}
 	}
 
-	// 无法进一步补全，返回所有候选供用户选择
+	// 无法进一步补全，返回所有候选供用户选择（去掉已输入的prefix）
 	var matches [][]rune
 	for _, candidate := range candidates {
-		matches = append(matches, []rune(candidate))
+		if len(candidate) > len(prefix) {
+			suffix := candidate[len(prefix):]
+			matches = append(matches, []rune(suffix))
+		} else {
+			matches = append(matches, []rune(candidate))
+		}
 	}
-	// return matches
-	return removePrefix(matches, prefix)
+	return matches
 }
 
 // completeLocalPath 补全本地路径
@@ -169,17 +179,16 @@ func (c *Completer) completeLocalPath(prefix string) [][]rune {
 		return nil
 	}
 
-	// 收集所有匹配的完整路径
+	// 收集所有匹配的名称（不包含前缀路径）
 	var candidates []string
 	for _, entry := range entries {
 		name := entry.Name()
 		if strings.HasPrefix(strings.ToLower(name), strings.ToLower(partial)) {
-			// 构建完整路径（保留用户输入的目录前缀格式）
-			fullPath := dir + name
+			// 只保存匹配的文件/目录名
 			if entry.IsDir() {
-				fullPath += string(os.PathSeparator)
+				name += string(os.PathSeparator)
 			}
-			candidates = append(candidates, fullPath)
+			candidates = append(candidates, name)
 		}
 	}
 
@@ -187,25 +196,28 @@ func (c *Completer) completeLocalPath(prefix string) [][]rune {
 		return nil
 	}
 
-	// 如果只有一个匹配，直接返回
+	// 如果只有一个匹配，返回需要补全的部分（去掉已输入的partial）
 	if len(candidates) == 1 {
-		return [][]rune{[]rune(candidates[0])}
+		// 返回未输入的部分
+		suffix := candidates[0][len(partial):]
+		return [][]rune{[]rune(suffix)}
 	}
 
 	// 多个匹配：计算公共前缀
 	common := longestCommonPrefix(candidates)
-	if len(common) > len(prefix) {
-		// 可以补全更多内容
-		return [][]rune{[]rune(common)}
+	if len(common) > len(partial) {
+		// 可以补全更多内容，返回差异部分
+		suffix := common[len(partial):]
+		return [][]rune{[]rune(suffix)}
 	}
 
-	// 无法进一步补全，返回所有候选供用户选择
+	// 无法进一步补全，返回所有候选供用户选择（去掉已输入的partial）
 	var matches [][]rune
 	for _, candidate := range candidates {
-		matches = append(matches, []rune(candidate))
+		suffix := candidate[len(partial):]
+		matches = append(matches, []rune(suffix))
 	}
-	// return matches
-	return removePrefix(matches, prefix)
+	return matches
 }
 
 // longestCommonPrefix 计算字符串列表的最长公共前缀

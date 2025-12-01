@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/chzyer/readline"
 
@@ -78,7 +79,7 @@ func (s *Shell) Run() error {
 
 // executeCommand 执行命令
 func (s *Shell) executeCommand(line string) error {
-	fields := strings.Fields(line)
+	fields := parseCommandLine(line)
 	if len(fields) == 0 {
 		return nil
 	}
@@ -126,6 +127,83 @@ func (s *Shell) executeCommand(line string) error {
 	}
 
 	return nil
+}
+
+// parseCommandLine 解析命令行，支持引号包裹的参数
+func parseCommandLine(line string) []string {
+	var fields []string
+	var current strings.Builder
+	inQuote := false
+	quoteChar := rune(0)
+
+	for i, r := range line {
+		switch {
+		case r == '"' || r == '\'':
+			if !inQuote {
+				// 开始引号
+				inQuote = true
+				quoteChar = r
+			} else if r == quoteChar {
+				// 结束引号
+				inQuote = false
+				quoteChar = 0
+			} else {
+				// 引号内的不同引号字符
+				current.WriteRune(r)
+			}
+		case r == ' ' || r == '\t':
+			if inQuote {
+				// 引号内的空格保留
+				current.WriteRune(r)
+			} else if current.Len() > 0 {
+				// 字段结束
+				fields = append(fields, current.String())
+				current.Reset()
+			}
+		case r == '\\':
+			// 转义字符
+			if i+1 < len(line) {
+				next := rune(line[i+1])
+				if next == '"' || next == '\'' || next == '\\' {
+					// 跳过当前的反斜杠，下一个字符会被正常添加
+					continue
+				}
+			}
+			current.WriteRune(r)
+		default:
+			current.WriteRune(r)
+		}
+	}
+
+	// 添加最后一个字段
+	if current.Len() > 0 {
+		fields = append(fields, current.String())
+	}
+
+	return fields
+}
+
+// formatSize 格式化文件大小为人类可读格式
+func formatSize(size int64) string {
+	const (
+		KB = 1024
+		MB = KB * 1024
+		GB = MB * 1024
+		TB = GB * 1024
+	)
+
+	switch {
+	case size >= TB:
+		return fmt.Sprintf("%.2f TB", float64(size)/float64(TB))
+	case size >= GB:
+		return fmt.Sprintf("%.2f GB", float64(size)/float64(GB))
+	case size >= MB:
+		return fmt.Sprintf("%.2f MB", float64(size)/float64(MB))
+	case size >= KB:
+		return fmt.Sprintf("%.2f KB", float64(size)/float64(KB))
+	default:
+		return fmt.Sprintf("%d B", size)
+	}
 }
 
 // showHelp 显示帮助
@@ -181,6 +259,7 @@ Tips:
   - Paths can be absolute (/path) or relative (./path)
   - Use ~ for home directory (both local and remote)
   - Directories in completion end with /
+  - Use quotes for paths with spaces: "my folder/file.txt"
   - Use glob patterns for batch operations: *.txt, **/*.go
 `
 	fmt.Println(help)
@@ -214,9 +293,9 @@ func (s *Shell) cmdLs(args []string) error {
 			typeChar = "d"
 		}
 
-		fmt.Printf("%s %10d  %s  %s\n",
+		fmt.Printf("%s %10s  %s  %s\n",
 			typeChar,
-			file.Size(),
+			formatSize(file.Size()),
 			file.ModTime().Format("2006-01-02 15:04:05"),
 			file.Name(),
 		)
@@ -248,6 +327,9 @@ func (s *Shell) cmdGet(args []string) error {
 		localPath = args[startIdx+1]
 	}
 
+	// 开始计时
+	startTime := time.Now()
+
 	// 检查是否是目录
 	stat, err := s.client.Stat(remotePath)
 	if err != nil {
@@ -266,7 +348,8 @@ func (s *Shell) cmdGet(args []string) error {
 		if err != nil {
 			return err
 		}
-		fmt.Printf("✓ Downloaded %d file(s)\n", count)
+		duration := time.Since(startTime)
+		fmt.Printf("✓ Downloaded %d file(s) in %s\n", count, duration.Round(time.Millisecond))
 		return nil
 	}
 
@@ -275,9 +358,11 @@ func (s *Shell) cmdGet(args []string) error {
 		return err
 	}
 
-	// 显示文件大小
+	duration := time.Since(startTime)
+
+	// 显示文件大小和用时
 	if stat, err := os.Stat(localPath); err == nil {
-		fmt.Printf("✓ Downloaded: %d bytes\n", stat.Size())
+		fmt.Printf("✓ Downloaded: %s in %s\n", formatSize(stat.Size()), duration.Round(time.Millisecond))
 	}
 
 	return nil
@@ -306,6 +391,9 @@ func (s *Shell) cmdPut(args []string) error {
 		remotePath = args[startIdx+1]
 	}
 
+	// 开始计时
+	startTime := time.Now()
+
 	// 检查是否包含 glob 模式
 	hasGlob := strings.ContainsAny(localPath, "*?[]")
 
@@ -319,7 +407,8 @@ func (s *Shell) cmdPut(args []string) error {
 		if err != nil {
 			return err
 		}
-		fmt.Printf("✓ Uploaded %d file(s)\n", count)
+		duration := time.Since(startTime)
+		fmt.Printf("✓ Uploaded %d file(s) in %s\n", count, duration.Round(time.Millisecond))
 		return nil
 	}
 
@@ -341,7 +430,8 @@ func (s *Shell) cmdPut(args []string) error {
 		if err != nil {
 			return err
 		}
-		fmt.Printf("✓ Uploaded %d file(s)\n", count)
+		duration := time.Since(startTime)
+		fmt.Printf("✓ Uploaded %d file(s) in %s\n", count, duration.Round(time.Millisecond))
 		return nil
 	}
 
@@ -350,7 +440,8 @@ func (s *Shell) cmdPut(args []string) error {
 		return err
 	}
 
-	fmt.Printf("✓ Uploaded successfully (%d bytes)\n", stat.Size())
+	duration := time.Since(startTime)
+	fmt.Printf("✓ Uploaded successfully (%s) in %s\n", formatSize(stat.Size()), duration.Round(time.Millisecond))
 	return nil
 }
 
@@ -419,7 +510,7 @@ func (s *Shell) cmdStat(args []string) error {
 
 	fmt.Printf("Path:     %s\n", args[0])
 	fmt.Printf("Type:     %s\n", s.fileType(stat))
-	fmt.Printf("Size:     %d bytes\n", stat.Size())
+	fmt.Printf("Size:     %s (%d bytes)\n", formatSize(stat.Size()), stat.Size())
 	fmt.Printf("Modified: %s\n", stat.ModTime().Format("2006-01-02 15:04:05"))
 	fmt.Printf("Mode:     %s\n", stat.Mode())
 
@@ -464,9 +555,9 @@ func (s *Shell) cmdLls(args []string) error {
 			typeChar = "d"
 		}
 
-		fmt.Printf("%s %10d  %s  %s\n",
+		fmt.Printf("%s %10s  %s  %s\n",
 			typeChar,
-			file.Size(),
+			formatSize(file.Size()),
 			file.ModTime().Format("2006-01-02 15:04:05"),
 			file.Name(),
 		)
