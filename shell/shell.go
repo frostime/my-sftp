@@ -15,8 +15,8 @@ import (
 
 // Shell 交互式 Shell
 type Shell struct {
-	client   *client.Client
-	rl       *readline.Instance
+	client    *client.Client
+	rl        *readline.Instance
 	completer *completer.Completer
 }
 
@@ -145,8 +145,18 @@ Available commands:
     lmkdir <dir>          Create local directory
   
   File Transfer:
-    get <remote> [local]  Download file from server
-    put <local> [remote]  Upload file to server
+    get [-r] <remote> [local]      Download file or directory from server
+    put [-r] <local|pattern> [remote]  Upload file(s) or directory to server
+    
+    Options:
+      -r                   Recursive mode for directories
+    
+    Examples:
+      put file.txt                   Upload single file
+      put *.log logs/                Upload all .log files
+      put **/*.go code/              Upload all .go files recursively
+      put -r mydir remotedir/        Upload entire directory
+      get -r remotedir localdir/     Download entire directory
   
   Remote File Operations:
     rm <path>             Remove file or directory
@@ -159,11 +169,19 @@ Available commands:
     help                  Show this help
     exit/quit/q           Exit program
 
+Features:
+  ✓ Progress bar with transfer speed for all file operations
+  ✓ Glob pattern matching (*, **, ?, [])
+  ✓ Recursive directory upload/download
+  ✓ Concurrent file transfers (up to 4 parallel)
+  ✓ Buffered I/O for better performance (512KB buffer)
+
 Tips:
   - Use TAB for auto-completion
   - Paths can be absolute (/path) or relative (./path)
   - Use ~ for home directory (both local and remote)
   - Directories in completion end with /
+  - Use glob patterns for batch operations: *.txt, **/*.go
 `
 	fmt.Println(help)
 }
@@ -195,7 +213,7 @@ func (s *Shell) cmdLs(args []string) error {
 		if file.IsDir() {
 			typeChar = "d"
 		}
-		
+
 		fmt.Printf("%s %10d  %s  %s\n",
 			typeChar,
 			file.Size(),
@@ -210,23 +228,56 @@ func (s *Shell) cmdLs(args []string) error {
 // cmdGet 下载文件
 func (s *Shell) cmdGet(args []string) error {
 	if len(args) < 1 {
-		return fmt.Errorf("usage: get <remote_file> [local_path]")
+		return fmt.Errorf("usage: get [-r] <remote_file> [local_path]")
 	}
 
-	remotePath := args[0]
+	// 解析参数
+	recursive := false
+	startIdx := 0
+	if args[0] == "-r" {
+		recursive = true
+		startIdx = 1
+		if len(args) < 2 {
+			return fmt.Errorf("usage: get -r <remote_path> [local_path]")
+		}
+	}
+
+	remotePath := args[startIdx]
 	localPath := filepath.Base(remotePath)
-	if len(args) > 1 {
-		localPath = args[1]
+	if len(args) > startIdx+1 {
+		localPath = args[startIdx+1]
 	}
 
-	fmt.Printf("Downloading %s -> %s ...\n", remotePath, localPath)
+	// 检查是否是目录
+	stat, err := s.client.Stat(remotePath)
+	if err != nil {
+		return err
+	}
+
+	if stat.IsDir() {
+		if !recursive {
+			return fmt.Errorf("%s is a directory, use 'get -r' for recursive download", remotePath)
+		}
+		// 递归下载目录
+		count, err := s.client.DownloadDir(remotePath, localPath, &client.DownloadOptions{
+			Recursive:    true,
+			ShowProgress: true,
+		})
+		if err != nil {
+			return err
+		}
+		fmt.Printf("✓ Downloaded %d file(s)\n", count)
+		return nil
+	}
+
+	// 下载单个文件
 	if err := s.client.Download(remotePath, localPath); err != nil {
 		return err
 	}
 
 	// 显示文件大小
 	if stat, err := os.Stat(localPath); err == nil {
-		fmt.Printf("Downloaded: %d bytes\n", stat.Size())
+		fmt.Printf("✓ Downloaded: %d bytes\n", stat.Size())
 	}
 
 	return nil
@@ -235,27 +286,71 @@ func (s *Shell) cmdGet(args []string) error {
 // cmdPut 上传文件
 func (s *Shell) cmdPut(args []string) error {
 	if len(args) < 1 {
-		return fmt.Errorf("usage: put <local_file> [remote_path]")
+		return fmt.Errorf("usage: put [-r] <local_file|pattern> [remote_path]")
 	}
 
-	localPath := args[0]
-	remotePath := filepath.Base(localPath)
-	if len(args) > 1 {
-		remotePath = args[1]
+	// 解析参数
+	recursive := false
+	startIdx := 0
+	if args[0] == "-r" {
+		recursive = true
+		startIdx = 1
+		if len(args) < 2 {
+			return fmt.Errorf("usage: put -r <local_path> [remote_path]")
+		}
 	}
 
-	// 检查本地文件
+	localPath := args[startIdx]
+	remotePath := "."
+	if len(args) > startIdx+1 {
+		remotePath = args[startIdx+1]
+	}
+
+	// 检查是否包含 glob 模式
+	hasGlob := strings.ContainsAny(localPath, "*?[]")
+
+	if hasGlob {
+		// Glob 模式匹配上传
+		count, err := s.client.UploadGlob(localPath, remotePath, &client.UploadOptions{
+			Recursive:    recursive,
+			ShowProgress: true,
+			Concurrency:  client.MaxConcurrentTransfers,
+		})
+		if err != nil {
+			return err
+		}
+		fmt.Printf("✓ Uploaded %d file(s)\n", count)
+		return nil
+	}
+
+	// 检查本地文件/目录
 	stat, err := os.Stat(localPath)
 	if err != nil {
 		return err
 	}
 
-	fmt.Printf("Uploading %s -> %s (%d bytes) ...\n", localPath, remotePath, stat.Size())
+	if stat.IsDir() {
+		if !recursive {
+			return fmt.Errorf("%s is a directory, use 'put -r' for recursive upload", localPath)
+		}
+		// 递归上传目录
+		count, err := s.client.UploadDir(localPath, remotePath, &client.UploadOptions{
+			Recursive:    true,
+			ShowProgress: true,
+		})
+		if err != nil {
+			return err
+		}
+		fmt.Printf("✓ Uploaded %d file(s)\n", count)
+		return nil
+	}
+
+	// 上传单个文件
 	if err := s.client.Upload(localPath, remotePath); err != nil {
 		return err
 	}
 
-	fmt.Println("Uploaded successfully")
+	fmt.Printf("✓ Uploaded successfully (%d bytes)\n", stat.Size())
 	return nil
 }
 
