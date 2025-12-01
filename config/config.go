@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 
 	"github.com/kevinburke/ssh_config"
 )
@@ -136,4 +137,68 @@ func (c *SSHConfig) Validate() error {
 		return fmt.Errorf("user is required")
 	}
 	return nil
+}
+
+// ParseDestination 解析 user@host[:port] 格式的目标字符串
+// 例如: "user@192.168.1.100" 或 "user@example.com:2222"
+func ParseDestination(dest string) (*SSHConfig, error) {
+	if dest == "" {
+		return nil, fmt.Errorf("destination is empty")
+	}
+
+	// 检查是否包含 @ 符号
+	if !strings.Contains(dest, "@") {
+		return nil, fmt.Errorf("invalid format: expected user@host[:port]")
+	}
+
+	config := &SSHConfig{
+		Port: 22, // 默认端口
+	}
+
+	// 分割 user@host[:port]
+	parts := strings.SplitN(dest, "@", 2)
+	config.User = parts[0]
+	hostPart := parts[1]
+
+	// 检查是否指定了端口
+	if strings.Contains(hostPart, ":") {
+		hostPortParts := strings.SplitN(hostPart, ":", 2)
+		config.Host = hostPortParts[0]
+		if port, err := strconv.Atoi(hostPortParts[1]); err == nil {
+			config.Port = port
+		} else {
+			return nil, fmt.Errorf("invalid port number: %s", hostPortParts[1])
+		}
+	} else {
+		config.Host = hostPart
+	}
+
+	return config, nil
+}
+
+// FindDefaultKeys 查找默认的 SSH 私钥文件
+// 返回存在的密钥文件路径列表
+func FindDefaultKeys() []string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return nil
+	}
+
+	sshDir := filepath.Join(home, ".ssh")
+	defaultKeys := []string{
+		"id_ed25519",
+		"id_rsa",
+		"id_ecdsa",
+		"id_dsa",
+	}
+
+	var foundKeys []string
+	for _, keyName := range defaultKeys {
+		keyPath := filepath.Join(sshDir, keyName)
+		if _, err := os.Stat(keyPath); err == nil {
+			foundKeys = append(foundKeys, keyPath)
+		}
+	}
+
+	return foundKeys
 }

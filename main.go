@@ -4,79 +4,64 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"strings"
 	"syscall"
 
 	"golang.org/x/crypto/ssh"
-	"golang.org/x/crypto/ssh/terminal"
+	terminal "golang.org/x/term"
 
 	"my-sftp/client"
 	"my-sftp/config"
 	"my-sftp/shell"
 )
 
-func main() {
-	var (
-		host     string
-		port     int
-		username string
-		password string
-		keyFile  string
-	)
+// Version 项目版本号，推荐用 -ldflags 注入
+var Version = "v0.2.0"
 
-	flag.StringVar(&host, "host", "", "SFTP server host (or use positional argument)")
-	flag.IntVar(&port, "port", 0, "SFTP server port (default: 22 or from config)")
-	flag.StringVar(&username, "user", "", "Username (default: from config)")
-	flag.StringVar(&password, "pass", "", "Password (leave empty for prompt)")
-	flag.StringVar(&keyFile, "key", "", "Path to private key file (default: from config)")
+func main() {
+	showVersion := flag.Bool("version", false, "Show version and exit")
 	flag.Parse()
 
-	// 获取位置参数作为主机别名
+	// 支持 my-sftp --version
+	if *showVersion {
+		fmt.Printf("my-sftp version: %s\n", Version)
+		os.Exit(0)
+	}
+
+	// 获取位置参数作为 destination
 	args := flag.Args()
-	var alias string
-	if len(args) > 0 {
-		alias = args[0]
+	if len(args) == 0 {
+		fmt.Println("Usage: my-sftp [--version] <destination>")
+		fmt.Println("")
+		fmt.Println("Examples:")
+		fmt.Println("  my-sftp myserver           # Use SSH config alias")
+		fmt.Println("  my-sftp user@host          # Connect to host")
+		fmt.Println("  my-sftp user@host:2222     # Connect to host with custom port")
+		os.Exit(1)
 	}
 
-	// 尝试从 SSH config 加载配置
+	destination := args[0]
+
+	// 尝试解析 destination
 	var sshConfig *config.SSHConfig
-	if alias != "" {
-		var err error
-		sshConfig, err = config.LoadSSHConfig(alias)
+	var err error
+
+	// 先尝试作为 user@host[:port] 解析
+	if strings.Contains(destination, "@") {
+		sshConfig, err = config.ParseDestination(destination)
 		if err != nil {
-			// 如果加载失败，将别名作为主机名
-			fmt.Printf("Warning: Failed to load SSH config for '%s': %v\n", alias, err)
-			fmt.Println("Using alias as hostname...")
-			sshConfig = &config.SSHConfig{
-				Host: alias,
-				Port: 22,
-			}
-		} else {
-			fmt.Printf("Loaded config for '%s'\n", alias)
+			fmt.Printf("Invalid destination format: %v\n", err)
+			os.Exit(1)
 		}
-
-		// 命令行参数覆盖配置文件
-		sshConfig.Merge(host, port, username, keyFile)
 	} else {
-		// 没有别名，使用命令行参数
-		sshConfig = &config.SSHConfig{
-			Host:         host,
-			Port:         port,
-			User:         username,
-			IdentityFile: keyFile,
+		// 作为 SSH config 别名处理
+		sshConfig, err = config.LoadSSHConfig(destination)
+		if err != nil {
+			// 如果加载失败，提示错误
+			fmt.Printf("Failed to load SSH config for '%s': %v\n", destination, err)
+			fmt.Println("Hint: Use 'user@host' format or check your SSH config file.")
+			os.Exit(1)
 		}
-		if sshConfig.Port == 0 {
-			sshConfig.Port = 22
-		}
-	}
-
-	// 交互式输入缺失的必需参数
-	if sshConfig.Host == "" {
-		fmt.Print("Host: ")
-		fmt.Scanln(&sshConfig.Host)
-	}
-	if sshConfig.User == "" {
-		fmt.Print("Username: ")
-		fmt.Scanln(&sshConfig.User)
 	}
 
 	// 验证配置
@@ -85,33 +70,49 @@ func main() {
 		os.Exit(1)
 	}
 
+	// 构建认证方法列表（按优先级顺序）
+	var authMethods []ssh.AuthMethod
+
+	// 1. 尝试从配置或默认位置加载密钥
+	var keyFiles []string
+	if sshConfig.IdentityFile != "" {
+		keyFiles = append(keyFiles, sshConfig.IdentityFile)
+	} else {
+		// 查找默认密钥
+		keyFiles = config.FindDefaultKeys()
+	}
+
+	// 尝试加载所有可用的密钥
+	for _, keyFile := range keyFiles {
+		if authMethod, err := loadPrivateKey(keyFile); err == nil {
+			authMethods = append(authMethods, authMethod)
+		}
+	}
+
+	// 2. 添加密码认证作为回退方案
+	// 使用 ssh.PasswordCallback 让 SSH 客户端在需要时才提示输入密码
+	passwordCallback := ssh.PasswordCallback(func() (string, error) {
+		fmt.Printf("%s@%s's password: ", sshConfig.User, sshConfig.Host)
+		pw, err := terminal.ReadPassword(int(syscall.Stdin))
+		fmt.Println()
+		if err != nil {
+			return "", err
+		}
+		return string(pw), nil
+	})
+	authMethods = append(authMethods, passwordCallback)
+
 	// 构建 SSH 配置
 	sshClientConfig := &ssh.ClientConfig{
 		User:            sshConfig.User,
+		Auth:            authMethods,
 		HostKeyCallback: ssh.InsecureIgnoreHostKey(), // 生产环境应验证主机密钥
-	}
-
-	// 认证方式：优先使用密钥，其次密码
-	if sshConfig.IdentityFile != "" {
-		authMethod, err := loadPrivateKey(sshConfig.IdentityFile)
-		if err != nil {
-			fmt.Printf("Failed to load private key: %v\n", err)
-			os.Exit(1)
-		}
-		sshClientConfig.Auth = []ssh.AuthMethod{authMethod}
-	} else {
-		// 密码认证
-		if password == "" {
-			fmt.Print("Password: ")
-			pw, _ := terminal.ReadPassword(int(syscall.Stdin))
-			fmt.Println()
-			password = string(pw)
-		}
-		sshClientConfig.Auth = []ssh.AuthMethod{ssh.Password(password)}
 	}
 
 	// 连接 SFTP 服务器
 	addr := fmt.Sprintf("%s:%d", sshConfig.Host, sshConfig.Port)
+
+	fmt.Printf("my-sftp version: %s\n", Version)
 	fmt.Printf("Connecting to %s@%s...\n", sshConfig.User, addr)
 
 	c, err := client.NewClient(addr, sshClientConfig)
@@ -137,20 +138,15 @@ func main() {
 func loadPrivateKey(keyPath string) (ssh.AuthMethod, error) {
 	key, err := os.ReadFile(keyPath)
 	if err != nil {
-		return nil, fmt.Errorf("read key file: %w", err)
+		return nil, err
 	}
 
 	signer, err := ssh.ParsePrivateKey(key)
 	if err != nil {
-		// 如果解析失败，尝试使用密码解密
-		fmt.Print("Key passphrase: ")
-		passphrase, _ := terminal.ReadPassword(int(syscall.Stdin))
-		fmt.Println()
-
-		signer, err = ssh.ParsePrivateKeyWithPassphrase(key, passphrase)
-		if err != nil {
-			return nil, fmt.Errorf("parse key: %w", err)
-		}
+		// 如果解析失败，可能需要密码短语
+		// 注意：这里不提示输入密码短语，因为我们会尝试多个密钥
+		// 如果真的需要密码短语，用户可以使用 ssh-agent
+		return nil, err
 	}
 
 	return ssh.PublicKeys(signer), nil
