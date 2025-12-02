@@ -21,8 +21,11 @@ import (
 	"my-sftp/shell"
 )
 
-// Version 项目版本号
-var Version = "v0.4.0"
+var (
+	Version = "dev"
+	Commit  = "none"
+	Date    = "unknown"
+)
 
 func main() {
 	showVersion := flag.Bool("version", false, "Show version and exit")
@@ -31,6 +34,9 @@ func main() {
 	// 支持 my-sftp --version
 	if *showVersion {
 		fmt.Printf("my-sftp version: %s\n", Version)
+		fmt.Printf("Commit: %s\n", Commit)
+		fmt.Printf("Built at: %s\n", Date)
+		// fmt.Printf("Go version: %s\n", runtime.Version())
 		os.Exit(0)
 	}
 
