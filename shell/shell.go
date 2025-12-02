@@ -12,8 +12,8 @@ import (
 
 	"github.com/chzyer/readline"
 
-	"my-sftp/client"
-	"my-sftp/completer"
+	"github.com/frostime/my-sftp/client"
+	"github.com/frostime/my-sftp/completer"
 )
 
 // Shell 交互式 Shell

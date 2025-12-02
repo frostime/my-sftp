@@ -16,9 +16,9 @@ import (
 	"golang.org/x/crypto/ssh/knownhosts"
 	terminal "golang.org/x/term"
 
-	"my-sftp/client"
-	"my-sftp/config"
-	"my-sftp/shell"
+	"github.com/frostime/my-sftp/client"
+	"github.com/frostime/my-sftp/config"
+	"github.com/frostime/my-sftp/shell"
 )
 
 var (
