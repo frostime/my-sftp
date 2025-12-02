@@ -1,4 +1,4 @@
-module my-sftp
+module github.com/frostime/my-sftp
 
 go 1.23
 
