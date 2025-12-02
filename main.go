@@ -1,13 +1,19 @@
 package main
 
 import (
+	"bufio"
+	"encoding/base64"
+	"errors"
 	"flag"
 	"fmt"
+	"net"
 	"os"
+	"path/filepath"
 	"strings"
 	"syscall"
 
 	"golang.org/x/crypto/ssh"
+	"golang.org/x/crypto/ssh/knownhosts"
 	terminal "golang.org/x/term"
 
 	"my-sftp/client"
@@ -15,8 +21,8 @@ import (
 	"my-sftp/shell"
 )
 
-// Version 项目版本号，推荐用 -ldflags 注入
-var Version = "v0.3.0"
+// Version 项目版本号
+var Version = "v0.4.0"
 
 func main() {
 	showVersion := flag.Bool("version", false, "Show version and exit")
@@ -42,43 +48,40 @@ func main() {
 
 	destination := args[0]
 
+	// ==================== 解析 SSH 配置 ====================
+
 	// 尝试解析 destination
 	var sshConfig *config.SSHConfig
 	var err error
 
-	// 先尝试作为 user@host[:port] 解析
+	// 1. 解析目标地址
 	if strings.Contains(destination, "@") {
 		sshConfig, err = config.ParseDestination(destination)
 		if err != nil {
-			fmt.Printf("Invalid destination format: %v\n", err)
+			fmt.Printf("Invalid destination: %v\n", err)
 			os.Exit(1)
 		}
 	} else {
 		// 作为 SSH config 别名处理
 		sshConfig, err = config.LoadSSHConfig(destination)
 		if err != nil {
-			// 如果加载失败，提示错误
-			fmt.Printf("Failed to load SSH config for '%s': %v\n", destination, err)
-			fmt.Println("Hint: Use 'user@host' format or check your SSH config file.")
+			fmt.Printf("Config error: %v\n", err)
 			os.Exit(1)
 		}
 	}
 
 	// 验证配置
 	if err := sshConfig.Validate(); err != nil {
-		fmt.Printf("Invalid configuration: %v\n", err)
+		fmt.Printf("Invalid config: %v\n", err)
 		os.Exit(1)
 	}
 
-	// 构建认证方法列表（按优先级顺序）
+	// 2. 准备认证方法 (Key + Password)
 	var authMethods []ssh.AuthMethod
-
-	// 1. 尝试从配置或默认位置加载密钥
 	var keyFiles []string
 	if sshConfig.IdentityFile != "" {
 		keyFiles = append(keyFiles, sshConfig.IdentityFile)
 	} else {
-		// 查找默认密钥
 		keyFiles = config.FindDefaultKeys()
 	}
 
@@ -89,8 +92,7 @@ func main() {
 		}
 	}
 
-	// 2. 添加密码认证作为回退方案
-	// 使用 ssh.PasswordCallback 让 SSH 客户端在需要时才提示输入密码
+	// Fallback: 使用密码验证
 	passwordCallback := ssh.PasswordCallback(func() (string, error) {
 		fmt.Printf("%s@%s's password: ", sshConfig.User, sshConfig.Host)
 		pw, err := terminal.ReadPassword(int(syscall.Stdin))
@@ -102,22 +104,35 @@ func main() {
 	})
 	authMethods = append(authMethods, passwordCallback)
 
-	// 构建 SSH 配置
+	// 3. 创建安全的 HostKeyCallback
+	// 查找 known_hosts 文件路径
+	homeDir, _ := os.UserHomeDir()
+	knownHostsPath := filepath.Join(homeDir, ".ssh", "known_hosts")
+
+	// 创建回调函数
+	hostKeyCallback, err := createHostKeyCallback(knownHostsPath)
+	if err != nil {
+		fmt.Printf("Failed to initialize host key verification: %v\n", err)
+		os.Exit(1)
+	}
+
+	// 4. 构建 ClientConfig
 	sshClientConfig := &ssh.ClientConfig{
 		User:            sshConfig.User,
 		Auth:            authMethods,
-		HostKeyCallback: ssh.InsecureIgnoreHostKey(), // 生产环境应验证主机密钥
+		HostKeyCallback: hostKeyCallback,
+		// HostKeyCallback: ssh.InsecureIgnoreHostKey(),
 	}
 
-	// 连接 SFTP 服务器
 	addr := fmt.Sprintf("%s:%d", sshConfig.Host, sshConfig.Port)
 
-	fmt.Printf("my-sftp version: %s\n", Version)
-	fmt.Printf("\033[33mWARNING: Host key verification is disabled (insecure mode)\033[0m\n")
-	fmt.Printf("Connecting to %s@%s...\n", sshConfig.User, addr)
+	fmt.Printf("[my-sftp %s]Connecting to %s@%s...\n", Version, sshConfig.User, addr)
+
+	// ==================== 创建 SSH 连接 ====================
 
 	c, err := client.NewClient(addr, sshClientConfig)
 	if err != nil {
+		// 这里的错误可能包含 Host Key 验证失败的信息
 		fmt.Printf("Connection failed: %v\n", err)
 		os.Exit(1)
 	}
@@ -127,7 +142,7 @@ func main() {
 	fmt.Println("Type 'help' for available commands, 'exit' to quit.")
 	fmt.Println()
 
-	// 启动交互式 Shell
+	// ==================== 启动交互式 Shell ====================
 	sh := shell.NewShell(c)
 	if err := sh.Run(); err != nil {
 		fmt.Printf("Shell error: %v\n", err)
@@ -135,20 +150,123 @@ func main() {
 	}
 }
 
-// loadPrivateKey 加载私钥文件
 func loadPrivateKey(keyPath string) (ssh.AuthMethod, error) {
 	key, err := os.ReadFile(keyPath)
 	if err != nil {
 		return nil, err
 	}
-
 	signer, err := ssh.ParsePrivateKey(key)
 	if err != nil {
-		// 如果解析失败，可能需要密码短语
-		// 注意：这里不提示输入密码短语，因为我们会尝试多个密钥
-		// 如果真的需要密码短语，用户可以使用 ssh-agent
+		return nil, err
+	}
+	return ssh.PublicKeys(signer), nil
+}
+
+// createHostKeyCallback 创建一个支持交互式确认的主机密钥回调
+func createHostKeyCallback(path string) (ssh.HostKeyCallback, error) {
+	// 确保文件存在，不存在则创建
+	if err := ensureFileExists(path); err != nil {
 		return nil, err
 	}
 
-	return ssh.PublicKeys(signer), nil
+	// 使用 ssh/knownhosts 包创建一个基础的回调
+	// 它会帮我们解析文件并验证 Key 是否匹配
+	callback, err := knownhosts.New(path)
+	if err != nil {
+		return nil, err
+	}
+
+	// 返回一个包装函数，处理 "未知主机" 的情况
+	return func(hostname string, remote net.Addr, key ssh.PublicKey) error {
+		// 1. 调用基础回调进行检查
+		err := callback(hostname, remote, key)
+
+		// 如果没有错误，说明已知且匹配，通过
+		if err == nil {
+			return nil
+		}
+
+		// 2. 检查具体的错误类型
+		// knownhosts.KeyError 表示：
+		// - 可能是 Key 不匹配（严重安全警告）
+		// - 可能是 Host 未知（需要询问用户）
+		var keyErr *knownhosts.KeyError
+		if errors.As(err, &keyErr) {
+			// 情况 A: 这是一个已知的 Host，但 Key 不一样！(MITM 攻击风险)
+			if len(keyErr.Want) > 0 {
+				return fmt.Errorf("HOST KEY MISMATCH for %s! Possible MITM attack. Remote key: %s, Known key: %v",
+					hostname, ssh.FingerprintSHA256(key), keyErr.Want)
+			}
+
+			// 情况 B: 这是一个未知的主机 (keyErr.Want 为空)
+			// 我们需要询问用户是否信任它
+			return askUserToTrustHost(path, hostname, remote, key)
+		}
+
+		// 其他系统错误
+		return err
+	}, nil
+}
+
+// askUserToTrustHost 询问用户是否信任主机，如果信任则写入文件
+func askUserToTrustHost(path string, hostname string, remote net.Addr, key ssh.PublicKey) error {
+	fmt.Printf("\nThe authenticity of host '%s' can't be established.\n", hostname)
+	fmt.Printf("%s key fingerprint is %s.\n", key.Type(), ssh.FingerprintSHA256(key))
+	fmt.Print("Are you sure you want to continue connecting (yes/no)? ")
+
+	reader := bufio.NewReader(os.Stdin)
+	text, _ := reader.ReadString('\n')
+	text = strings.TrimSpace(strings.ToLower(text))
+
+	if text != "yes" {
+		return fmt.Errorf("host key verification failed: user aborted")
+	}
+
+	// 用户同意，追加到 known_hosts 文件
+	return appendToKnownHosts(path, hostname, remote, key)
+}
+
+// appendToKnownHosts 将新主机追加到 known_hosts 文件
+func appendToKnownHosts(path string, hostname string, remote net.Addr, key ssh.PublicKey) error {
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0600)
+	if err != nil {
+		return fmt.Errorf("failed to open known_hosts: %w", err)
+	}
+	defer f.Close()
+
+	// 处理非标准端口的情况
+	// ssh 规范：如果端口不是22，hostname 格式通常是 [host]:port
+	// knownhosts.Normalize 帮助我们标准化这个格式
+	normalizedHost := knownhosts.Normalize(hostname)
+
+	// 序列化公钥
+	keyBytes := key.Marshal()
+	keyBase64 := base64.StdEncoding.EncodeToString(keyBytes)
+
+	// 写入格式: host key-type key-base64
+	line := fmt.Sprintf("%s %s %s\n", normalizedHost, key.Type(), keyBase64)
+
+	if _, err := f.WriteString(line); err != nil {
+		return fmt.Errorf("failed to write to known_hosts: %w", err)
+	}
+
+	fmt.Printf("Warning: Permanently added '%s' (%s) to the list of known hosts.\n", hostname, key.Type())
+	return nil
+}
+
+// ensureFileExists 确保文件存在，如果不存在则创建
+func ensureFileExists(path string) error {
+	dir := filepath.Dir(path)
+	if _, err := os.Stat(dir); os.IsNotExist(err) {
+		if err := os.MkdirAll(dir, 0700); err != nil {
+			return err
+		}
+	}
+
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE, 0600)
+	if err != nil {
+		return err
+	}
+	f.Close()
+	return nil
 }
