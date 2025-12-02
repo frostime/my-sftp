@@ -36,6 +36,7 @@ My-SFTP 支持多种连接方式：
 
 ```bash
 # 1. 使用 SSH Config 别名 (推荐)
+# `~/.ssh/config` (Linux/Mac) 或 `%USERPROFILE%\.ssh\config`
 my-sftp myserver
 
 # 2. 标准格式连接

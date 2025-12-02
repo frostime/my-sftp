@@ -649,6 +649,149 @@ func (c *Client) DownloadDir(remoteDir, localDir string, opts *DownloadOptions) 
 	return count, nil
 }
 
+// DownloadGlob 使用 glob 模式匹配下载远程文件
+func (c *Client) DownloadGlob(pattern, localPath string, opts *DownloadOptions) (int, error) {
+	if opts == nil {
+		opts = &DownloadOptions{ShowProgress: true, Concurrency: MaxConcurrentTransfers}
+	}
+
+	// 解析 glob 模式的基路径
+	basePath := c.workDir
+	fullPattern := pattern
+	if !path.IsAbs(pattern) {
+		fullPattern = path.Join(basePath, pattern)
+	}
+
+	// 查找匹配的远程文件
+	matches, err := c.globRemote(fullPattern)
+	if err != nil {
+		return 0, fmt.Errorf("glob pattern: %w", err)
+	}
+
+	if len(matches) == 0 {
+		return 0, fmt.Errorf("no files match pattern: %s", pattern)
+	}
+
+	// 过滤掉目录（除非启用递归模式）
+	var files []string
+	for _, match := range matches {
+		stat, err := c.sftpClient.Stat(match)
+		if err != nil {
+			continue
+		}
+		if stat.IsDir() && !opts.Recursive {
+			continue
+		}
+		files = append(files, match)
+	}
+
+	if len(files) == 0 {
+		return 0, fmt.Errorf("no files to download")
+	}
+
+	fmt.Printf("Found %d file(s) to download\n", len(files))
+
+	// 确保本地目标目录存在
+	localPath = c.resolveLocalPath(localPath)
+	if err := os.MkdirAll(localPath, 0755); err != nil {
+		return 0, fmt.Errorf("create local dir: %w", err)
+	}
+
+	// 下载文件
+	return c.downloadFiles(files, localPath, opts)
+}
+
+// globRemote 在远程文件系统上执行 glob 匹配
+func (c *Client) globRemote(pattern string) ([]string, error) {
+	// 找到第一个包含通配符的路径段
+	parts := strings.Split(pattern, "/")
+	baseIdx := 0
+	for i, part := range parts {
+		if strings.ContainsAny(part, "*?[]") {
+			baseIdx = i
+			break
+		}
+	}
+
+	// 基路径是通配符之前的部分
+	basePath := "/"
+	if baseIdx > 0 {
+		basePath = strings.Join(parts[:baseIdx], "/")
+		if basePath == "" {
+			basePath = "/"
+		}
+	}
+
+	// 收集所有远程文件
+	var allFiles []string
+	var walk func(string) error
+	walk = func(dir string) error {
+		entries, err := c.sftpClient.ReadDir(dir)
+		if err != nil {
+			return nil // 忽略无法访问的目录
+		}
+
+		for _, entry := range entries {
+			fullPath := path.Join(dir, entry.Name())
+			allFiles = append(allFiles, fullPath)
+			if entry.IsDir() {
+				// 只有在模式包含 ** 时才递归
+				if strings.Contains(pattern, "**") {
+					walk(fullPath)
+				}
+			}
+		}
+		return nil
+	}
+
+	// 从基路径开始遍历
+	walk(basePath)
+
+	// 使用 doublestar 进行匹配
+	var matches []string
+	for _, file := range allFiles {
+		matched, err := doublestar.Match(pattern, file)
+		if err != nil {
+			continue
+		}
+		if matched {
+			matches = append(matches, file)
+		}
+	}
+
+	return matches, nil
+}
+
+// downloadFiles 下载多个文件到指定目录
+func (c *Client) downloadFiles(files []string, localDir string, opts *DownloadOptions) (int, error) {
+	count := 0
+	for _, remoteFile := range files {
+		stat, err := c.sftpClient.Stat(remoteFile)
+		if err != nil {
+			continue
+		}
+
+		if stat.IsDir() {
+			// 递归下载目录
+			localSubDir := filepath.Join(localDir, path.Base(remoteFile))
+			n, err := c.DownloadDir(remoteFile, localSubDir, opts)
+			if err != nil {
+				return count, fmt.Errorf("download dir %s: %w", remoteFile, err)
+			}
+			count += n
+		} else {
+			// 下载单个文件
+			localFile := filepath.Join(localDir, path.Base(remoteFile))
+			if err := c.DownloadWithProgress(remoteFile, localFile, opts.ShowProgress); err != nil {
+				return count, fmt.Errorf("download %s: %w", remoteFile, err)
+			}
+			count++
+		}
+	}
+
+	return count, nil
+}
+
 // uploadFiles 并发上传多个文件
 func (c *Client) uploadFiles(files []string, remotePath string, opts *UploadOptions) (int, error) {
 	concurrency := opts.Concurrency

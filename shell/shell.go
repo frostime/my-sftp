@@ -223,18 +223,21 @@ Available commands:
     lmkdir <dir>          Create local directory
   
   File Transfer:
-    get [-r] <remote> [local]      Download file or directory from server
+    get [-r] <remote|pattern> [local]  Download file(s) or directory from server
     put [-r] <local|pattern> [remote]  Upload file(s) or directory to server
     
     Options:
       -r                   Recursive mode for directories
     
     Examples:
+      get file.txt                   Download single file
+      get *.log logs/                Download all .log files
+      get **/*.go code/              Download all .go files recursively
+      get -r remotedir localdir/     Download entire directory
       put file.txt                   Upload single file
       put *.log logs/                Upload all .log files
       put **/*.go code/              Upload all .go files recursively
       put -r mydir remotedir/        Upload entire directory
-      get -r remotedir localdir/     Download entire directory
   
   Remote File Operations:
     rm <path>             Remove file or directory
@@ -310,7 +313,7 @@ func (s *Shell) cmdLs(args []string) error {
 // cmdGet 下载文件
 func (s *Shell) cmdGet(args []string) error {
 	if len(args) < 1 {
-		return fmt.Errorf("usage: get [-r] <remote_file> [local_path]")
+		return fmt.Errorf("usage: get [-r] <remote_file|pattern> [local_path]")
 	}
 
 	// 解析参数
@@ -320,18 +323,39 @@ func (s *Shell) cmdGet(args []string) error {
 		recursive = true
 		startIdx = 1
 		if len(args) < 2 {
-			return fmt.Errorf("usage: get -r <remote_path> [local_path]")
+			return fmt.Errorf("usage: get -r <remote_path|pattern> [local_path]")
 		}
 	}
 
 	remotePath := args[startIdx]
-	localPath := filepath.Base(remotePath)
+	localPath := "."
 	if len(args) > startIdx+1 {
 		localPath = args[startIdx+1]
+	} else if !strings.ContainsAny(remotePath, "*?[]") {
+		// 非 glob 模式时，使用远程文件名作为本地文件名
+		localPath = filepath.Base(remotePath)
 	}
 
 	// 开始计时
 	startTime := time.Now()
+
+	// 检查是否包含 glob 模式
+	hasGlob := strings.ContainsAny(remotePath, "*?[]")
+
+	if hasGlob {
+		// Glob 模式匹配下载
+		count, err := s.client.DownloadGlob(remotePath, localPath, &client.DownloadOptions{
+			Recursive:    recursive,
+			ShowProgress: true,
+			Concurrency:  client.MaxConcurrentTransfers,
+		})
+		if err != nil {
+			return err
+		}
+		duration := time.Since(startTime)
+		fmt.Printf("✓ Downloaded %d file(s) in %s\n", count, duration.Round(time.Millisecond))
+		return nil
+	}
 
 	// 检查是否是目录
 	stat, err := s.client.Stat(remotePath)
