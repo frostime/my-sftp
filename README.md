@@ -94,6 +94,28 @@ my-sftp user@host:2222
 | `stat`         | 查看文件详细信息  | `stat file.txt`       |
 | `lmkdir`       | 创建本地目录    | `lmkdir local_folder` |
 
+#### 🖥️ Shell 命令执行
+
+| 命令   | 说明               | 示例                |
+| :--- | :--------------- | :---------------- |
+| `!`  | 在**远程**服务器执行命令   | `! tree -L 2`     |
+| `!!` | 在**本地**机器执行命令    | `!! dir`          |
+
+**🔥 Shell 命令示例**
+
+```bash
+# 远程命令执行（模仿 IPython 风格）
+> ! cat /etc/os-release       # 查看远程系统信息
+> ! df -h                     # 查看远程磁盘使用情况
+> ! tree -L 2                 # 查看远程目录树
+> ! tail -n 100 app.log       # 查看远程日志文件
+
+# 本地命令执行
+> !! dir                      # Windows: 列出本地目录
+> !! ls -la                   # Linux/Mac: 列出本地目录
+> !! cat config.json          # 查看本地文件内容
+```
+
 ## ⚙️ 配置指南
 
 My-SFTP 会自动读取系统中的 SSH 配置。

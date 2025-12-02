@@ -4,7 +4,9 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 
@@ -79,6 +81,24 @@ func (s *Shell) Run() error {
 
 // executeCommand 执行命令
 func (s *Shell) executeCommand(line string) error {
+	// 检查 !! 前缀（本地命令）- 必须先检查 !! 再检查 !
+	if strings.HasPrefix(line, "!!") {
+		cmdStr := strings.TrimSpace(strings.TrimPrefix(line, "!!"))
+		if cmdStr == "" {
+			return fmt.Errorf("usage: !! <local_command>")
+		}
+		return s.cmdExecLocal(cmdStr)
+	}
+
+	// 检查 ! 前缀（远程命令）
+	if strings.HasPrefix(line, "!") {
+		cmdStr := strings.TrimSpace(strings.TrimPrefix(line, "!"))
+		if cmdStr == "" {
+			return fmt.Errorf("usage: ! <remote_command>")
+		}
+		return s.cmdExecRemote(cmdStr)
+	}
+
 	fields := parseCommandLine(line)
 	if len(fields) == 0 {
 		return nil
@@ -245,6 +265,17 @@ Available commands:
     rmdir <dir>           Remove directory
     rename <old> <new>    Rename file or directory
     stat <path>           Show file information
+  
+  Shell Commands:
+    ! <command>           Execute command on remote server
+    !! <command>          Execute command on local machine
+    
+    Examples:
+      ! tree -L 2              List remote directory tree
+      ! cat config.yaml        View remote file content
+      ! df -h                  Check remote disk usage
+      !! dir                   List local directory (Windows)
+      !! ls -la                List local directory (Linux/Mac)
   
   Other:
     help                  Show this help
@@ -606,5 +637,40 @@ func (s *Shell) cmdLmkdir(args []string) error {
 		fmt.Printf("Created local: %s\n", dir)
 	}
 
+	return nil
+}
+
+// ==================== Shell 命令执行 ====================
+
+// cmdExecRemote 在远程服务器执行命令
+func (s *Shell) cmdExecRemote(cmdStr string) error {
+	fmt.Printf("[Remote] Executing: %s\n", cmdStr)
+	// 直接绑定终端的 stdin/stdout/stderr，支持交互式命令
+	if err := s.client.ExecuteRemote(cmdStr, os.Stdin, os.Stdout, os.Stderr); err != nil {
+		return fmt.Errorf("remote command failed: %w", err)
+	}
+	return nil
+}
+
+// cmdExecLocal 在本地执行命令
+func (s *Shell) cmdExecLocal(cmdStr string) error {
+	fmt.Printf("[Local] Executing: %s\n", cmdStr)
+
+	var cmd *exec.Cmd
+	if runtime.GOOS == "windows" {
+		cmd = exec.Command("cmd", "/C", cmdStr)
+	} else {
+		cmd = exec.Command("sh", "-c", cmdStr)
+	}
+
+	// 设置工作目录为当前本地工作目录
+	cmd.Dir = s.client.GetLocalwd()
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	cmd.Stdin = os.Stdin
+
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("local command failed: %w", err)
+	}
 	return nil
 }

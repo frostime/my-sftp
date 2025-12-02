@@ -876,3 +876,21 @@ func (c *Client) invalidateDirCache(dir string) {
 	delete(c.dirCache, dir)
 	c.cacheMu.Unlock()
 }
+
+// ExecuteRemote 在远程服务器执行命令（交互式）
+func (c *Client) ExecuteRemote(command string, stdin io.Reader, stdout, stderr io.Writer) error {
+	session, err := c.sshClient.NewSession()
+	if err != nil {
+		return fmt.Errorf("create session: %w", err)
+	}
+	defer session.Close()
+
+	// 绑定 stdin/stdout/stderr 实现交互
+	session.Stdin = stdin
+	session.Stdout = stdout
+	session.Stderr = stderr
+
+	// 在当前工作目录执行命令
+	fullCommand := fmt.Sprintf("cd %s && %s", c.workDir, command)
+	return session.Run(fullCommand)
+}
