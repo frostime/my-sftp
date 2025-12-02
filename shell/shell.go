@@ -281,6 +281,9 @@ func (s *Shell) cmdLs(args []string) error {
 		dir = args[0]
 	}
 
+	// 用户主动执行 ls 时，清除缓存以获取最新内容
+	s.client.ClearDirCache()
+
 	files, err := s.client.List(dir)
 	if err != nil {
 		return err

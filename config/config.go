@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"net"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -140,7 +141,7 @@ func (c *SSHConfig) Validate() error {
 }
 
 // ParseDestination 解析 user@host[:port] 格式的目标字符串
-// 例如: "user@192.168.1.100" 或 "user@example.com:2222"
+// 例如: "user@192.168.1.100" 或 "user@example.com:2222" 或 "user@[2001:db8::1]:22"
 func ParseDestination(dest string) (*SSHConfig, error) {
 	if dest == "" {
 		return nil, fmt.Errorf("destination is empty")
@@ -160,17 +161,24 @@ func ParseDestination(dest string) (*SSHConfig, error) {
 	config.User = parts[0]
 	hostPart := parts[1]
 
-	// 检查是否指定了端口
-	if strings.Contains(hostPart, ":") {
-		hostPortParts := strings.SplitN(hostPart, ":", 2)
-		config.Host = hostPortParts[0]
-		if port, err := strconv.Atoi(hostPortParts[1]); err == nil {
-			config.Port = port
+	// 使用 net.SplitHostPort 正确处理 IPv6 地址
+	host, portStr, err := net.SplitHostPort(hostPart)
+	if err != nil {
+		// 如果出错，可能是没有指定端口，只有主机名/IP
+		// 对于 IPv6 literal 没有端口的情况 (如 "[2001:db8::1]")，需要去除方括号
+		if strings.HasPrefix(hostPart, "[") && strings.HasSuffix(hostPart, "]") {
+			config.Host = hostPart[1 : len(hostPart)-1]
 		} else {
-			return nil, fmt.Errorf("invalid port number: %s", hostPortParts[1])
+			config.Host = hostPart
 		}
 	} else {
-		config.Host = hostPart
+		// 成功分离出主机和端口
+		config.Host = host
+		if port, err := strconv.Atoi(portStr); err == nil {
+			config.Port = port
+		} else {
+			return nil, fmt.Errorf("invalid port number: %s", portStr)
+		}
 	}
 
 	return config, nil

@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/bmatcuk/doublestar/v4"
 	"github.com/pkg/sftp"
@@ -20,14 +21,24 @@ const (
 	BufferSize = 512 * 1024
 	// MaxConcurrentTransfers 最大并发传输数
 	MaxConcurrentTransfers = 4
+	// DirCacheTimeout 目录列表缓存超时时间
+	DirCacheTimeout = 30 * time.Second
 )
+
+// dirCacheEntry 目录缓存条目
+type dirCacheEntry struct {
+	files    []os.FileInfo
+	cachedAt time.Time
+}
 
 // Client SFTP 客户端封装
 type Client struct {
 	sshClient    *ssh.Client
 	sftpClient   *sftp.Client
-	workDir      string // 远程当前工作目录
-	localWorkDir string // 本地当前工作目录
+	workDir      string                    // 远程当前工作目录
+	localWorkDir string                    // 本地当前工作目录
+	dirCache     map[string]*dirCacheEntry // 目录列表缓存
+	cacheMu      sync.RWMutex              // 缓存锁
 }
 
 // NewClient 创建 SFTP 客户端
@@ -60,6 +71,7 @@ func NewClient(addr string, config *ssh.ClientConfig) (*Client, error) {
 		sftpClient:   sftpClient,
 		workDir:      wd,
 		localWorkDir: localWd,
+		dirCache:     make(map[string]*dirCacheEntry),
 	}, nil
 }
 
@@ -133,13 +145,41 @@ func (c *Client) Chdir(dir string) error {
 		return fmt.Errorf("not a directory: %s", targetPath)
 	}
 	c.workDir = targetPath
+	// 切换目录后清除缓存
+	c.ClearDirCache()
 	return nil
 }
 
 // List 列出目录内容
 func (c *Client) List(dir string) ([]os.FileInfo, error) {
 	targetPath := c.resolvePath(dir)
-	return c.sftpClient.ReadDir(targetPath)
+
+	// 检查缓存
+	c.cacheMu.RLock()
+	if entry, exists := c.dirCache[targetPath]; exists {
+		// 检查是否过期
+		if time.Since(entry.cachedAt) < DirCacheTimeout {
+			c.cacheMu.RUnlock()
+			return entry.files, nil
+		}
+	}
+	c.cacheMu.RUnlock()
+
+	// 缓存未命中或已过期，读取目录
+	files, err := c.sftpClient.ReadDir(targetPath)
+	if err != nil {
+		return nil, err
+	}
+
+	// 更新缓存
+	c.cacheMu.Lock()
+	c.dirCache[targetPath] = &dirCacheEntry{
+		files:    files,
+		cachedAt: time.Now(),
+	}
+	c.cacheMu.Unlock()
+
+	return files, nil
 }
 
 // Download 下载文件
@@ -248,11 +288,19 @@ func (c *Client) Remove(remotePath string) error {
 		return err
 	}
 
+	var removeErr error
 	if stat.IsDir() {
 		// 递归删除目录
-		return c.removeDir(remotePath)
+		removeErr = c.removeDir(remotePath)
+	} else {
+		removeErr = c.sftpClient.Remove(remotePath)
 	}
-	return c.sftpClient.Remove(remotePath)
+
+	if removeErr == nil {
+		// 清除父目录缓存
+		c.invalidateDirCache(path.Dir(remotePath))
+	}
+	return removeErr
 }
 
 // removeDir 递归删除目录
@@ -281,14 +329,25 @@ func (c *Client) removeDir(dir string) error {
 // Mkdir 创建目录
 func (c *Client) Mkdir(dir string) error {
 	dir = c.resolvePath(dir)
-	return c.sftpClient.Mkdir(dir)
+	err := c.sftpClient.Mkdir(dir)
+	if err == nil {
+		// 清除父目录缓存
+		c.invalidateDirCache(path.Dir(dir))
+	}
+	return err
 }
 
 // Rename 重命名文件或目录
 func (c *Client) Rename(oldPath, newPath string) error {
 	oldPath = c.resolvePath(oldPath)
 	newPath = c.resolvePath(newPath)
-	return c.sftpClient.Rename(oldPath, newPath)
+	err := c.sftpClient.Rename(oldPath, newPath)
+	if err == nil {
+		// 清除相关目录缓存
+		c.invalidateDirCache(path.Dir(oldPath))
+		c.invalidateDirCache(path.Dir(newPath))
+	}
+	return err
 }
 
 // Stat 获取文件信息
@@ -318,9 +377,9 @@ func (c *Client) ListCompletion(prefix string) []string {
 	var matches []string
 	for _, file := range files {
 		name := file.Name()
-		// 不区分大小写匹配
-		if strings.HasPrefix(strings.ToLower(name), strings.ToLower(partial)) {
-			// 构建候选项：保留用户输入的路径前缀格式
+		// SFTP 服务器通常是 Linux/Unix，文件系统大小写敏感
+		if strings.HasPrefix(name, partial) {
+			// 构建候选项:保留用户输入的路径前缀格式
 			candidate := userDir + name
 			if file.IsDir() {
 				candidate += "/"
@@ -653,5 +712,24 @@ func (c *Client) ensureRemoteDir(dir string) error {
 	}
 
 	// 创建目录
-	return c.sftpClient.Mkdir(dir)
+	err := c.sftpClient.Mkdir(dir)
+	if err == nil {
+		c.invalidateDirCache(parent)
+	}
+	return err
+}
+
+// ClearDirCache 清除所有目录缓存
+func (c *Client) ClearDirCache() {
+	c.cacheMu.Lock()
+	c.dirCache = make(map[string]*dirCacheEntry)
+	c.cacheMu.Unlock()
+}
+
+// invalidateDirCache 清除指定目录的缓存
+func (c *Client) invalidateDirCache(dir string) {
+	dir = c.resolvePath(dir)
+	c.cacheMu.Lock()
+	delete(c.dirCache, dir)
+	c.cacheMu.Unlock()
 }

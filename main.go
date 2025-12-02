@@ -16,7 +16,7 @@ import (
 )
 
 // Version 项目版本号，推荐用 -ldflags 注入
-var Version = "v0.2.0"
+var Version = "v0.3.0"
 
 func main() {
 	showVersion := flag.Bool("version", false, "Show version and exit")
@@ -113,6 +113,7 @@ func main() {
 	addr := fmt.Sprintf("%s:%d", sshConfig.Host, sshConfig.Port)
 
 	fmt.Printf("my-sftp version: %s\n", Version)
+	fmt.Printf("\033[33mWARNING: Host key verification is disabled (insecure mode)\033[0m\n")
 	fmt.Printf("Connecting to %s@%s...\n", sshConfig.User, addr)
 
 	c, err := client.NewClient(addr, sshClientConfig)
