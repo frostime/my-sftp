@@ -72,8 +72,13 @@ func (c *Client) executeTasks(tasks []transferTask, opts *TransferOptions) (int,
 		globalBar = progressbar.NewOptions(len(tasks),
 			progressbar.OptionSetDescription("Transferring files"),
 			progressbar.OptionShowCount(),
+			progressbar.OptionShowBytes(true),
 			progressbar.OptionSetWidth(40),
 			progressbar.OptionClearOnFinish(),
+			progressbar.OptionSetElapsedTime(true),
+			progressbar.OptionSetPredictTime(true),
+			progressbar.OptionShowBytes(true),
+			progressbar.OptionShowTotalBytes(true),
 		)
 	}
 

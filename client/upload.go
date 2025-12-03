@@ -18,8 +18,8 @@ func (c *Client) Upload(localPath, remotePath string) error {
 
 // UploadWithProgress 上传文件（支持进度条）
 func (c *Client) UploadWithProgress(localPath, remotePath string, showProgress bool) error {
-	localPath = c.resolveLocalPath(localPath)
-	remotePath = c.resolvePath(remotePath)
+	localPath = c.ResolveLocalPath(localPath)
+	remotePath = c.ResolveRemotePath(remotePath)
 
 	// 获取本地文件信息
 	stat, err := os.Stat(localPath)
@@ -98,7 +98,7 @@ func (c *Client) UploadGlob(pattern, remotePath string, opts *UploadOptions) (in
 		return 0, fmt.Errorf("no files match pattern: %s", pattern)
 	}
 
-	remotePath = c.resolvePath(remotePath)
+	remotePath = c.ResolveRemotePath(remotePath)
 
 	// 收集所有上传任务
 	var tasks []transferTask
@@ -163,8 +163,8 @@ func (c *Client) UploadDir(localDir, remoteDir string, opts *UploadOptions) (int
 		}
 	}
 
-	localDir = c.resolveLocalPath(localDir)
-	remoteDir = c.resolvePath(remoteDir)
+	localDir = c.ResolveLocalPath(localDir)
+	remoteDir = c.ResolveRemotePath(remoteDir)
 
 	// 检查本地目录
 	stat, err := os.Stat(localDir)
@@ -208,7 +208,7 @@ func (c *Client) UploadDir(localDir, remoteDir string, opts *UploadOptions) (int
 // ensureRemoteDir 确保远程目录存在
 // 确保同一目录只创建一次，避免并发竞争
 func (c *Client) ensureRemoteDir(dir string) error {
-	dir = c.resolvePath(dir)
+	dir = c.ResolveRemotePath(dir)
 
 	// 快速路径：目录已存在
 	if stat, err := c.sftpClient.Stat(dir); err == nil && stat.IsDir() {

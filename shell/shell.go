@@ -346,7 +346,7 @@ func (s *Shell) cmdLs(args []string) error {
 // cmdGet 下载文件
 func (s *Shell) cmdGet(args []string) error {
 	if len(args) < 1 {
-		return fmt.Errorf("usage: get [-r] <remote_file|pattern> [local_path]")
+		return fmt.Errorf("usage: get [-r] <remote_file|pattern>... [local_path]")
 	}
 
 	// 解析参数
@@ -356,82 +356,94 @@ func (s *Shell) cmdGet(args []string) error {
 		recursive = true
 		startIdx = 1
 		if len(args) < 2 {
-			return fmt.Errorf("usage: get -r <remote_path|pattern> [local_path]")
+			return fmt.Errorf("usage: get -r <remote_path|pattern>... [local_path]")
 		}
 	}
 
-	remotePath := args[startIdx]
+	// 收集所有远程路径参数
+	remotePaths := args[startIdx:]
 	localPath := "."
-	if len(args) > startIdx+1 {
-		localPath = args[startIdx+1]
-	} else if !strings.ContainsAny(remotePath, "*?[]") {
-		// 非 glob 模式时，使用远程文件名作为本地文件名
-		localPath = filepath.Base(remotePath)
+
+	// 如果最后一个参数是本地目录，则作为目标路径
+	// 判断逻辑：如果有多个参数，且最后一个参数在本地存在且是目录，则视为本地目标路径
+	if len(remotePaths) > 1 {
+		lastArg := remotePaths[len(remotePaths)-1]
+		resolvedLast := s.client.ResolveLocalPath(lastArg)
+		if stat, err := os.Stat(resolvedLast); err == nil && stat.IsDir() {
+			// 最后一个参数是本地目录，视为目标路径
+			localPath = lastArg
+			remotePaths = remotePaths[:len(remotePaths)-1]
+		}
+	} else if len(remotePaths) == 1 && !strings.ContainsAny(remotePaths[0], "*?[]") {
+		// 单文件非 glob 模式，使用远程文件名作为本地文件名
+		localPath = filepath.Base(remotePaths[0])
 	}
 
 	// 开始计时
 	startTime := time.Now()
+	totalCount := 0
 
-	// 检查是否包含 glob 模式
-	hasGlob := strings.ContainsAny(remotePath, "*?[]")
+	for _, remotePath := range remotePaths {
+		// 检查是否包含 glob 模式
+		hasGlob := strings.ContainsAny(remotePath, "*?[]")
 
-	if hasGlob {
-		// Glob 模式匹配下载
-		count, err := s.client.DownloadGlob(remotePath, localPath, &client.DownloadOptions{
-			Recursive:    recursive,
-			ShowProgress: true,
-			Concurrency:  client.MaxConcurrentTransfers,
-		})
+		if hasGlob {
+			// Glob 模式匹配下载
+			count, err := s.client.DownloadGlob(remotePath, localPath, &client.DownloadOptions{
+				Recursive:    recursive,
+				ShowProgress: true,
+				Concurrency:  client.MaxConcurrentTransfers,
+			})
+			if err != nil {
+				return err
+			}
+			totalCount += count
+			continue
+		}
+
+		// 检查是否是目录
+		stat, err := s.client.Stat(remotePath)
 		if err != nil {
 			return err
 		}
-		duration := time.Since(startTime)
-		fmt.Printf("✓ Downloaded %d file(s) in %s\n", count, duration.Round(time.Millisecond))
-		return nil
-	}
 
-	// 检查是否是目录
-	stat, err := s.client.Stat(remotePath)
-	if err != nil {
-		return err
-	}
-
-	if stat.IsDir() {
-		if !recursive {
-			return fmt.Errorf("%s is a directory, use 'get -r' for recursive download", remotePath)
+		if stat.IsDir() {
+			if !recursive {
+				return fmt.Errorf("%s is a directory, use 'get -r' for recursive download", remotePath)
+			}
+			// 递归下载目录
+			count, err := s.client.DownloadDir(remotePath, localPath, &client.DownloadOptions{
+				Recursive:    true,
+				ShowProgress: true,
+			})
+			if err != nil {
+				return err
+			}
+			totalCount += count
+		} else {
+			// 下载单个文件
+			// 多文件下载时，localPath 是目录；单文件下载时，localPath 是文件名
+			targetPath := localPath
+			if len(remotePaths) > 1 {
+				// 多文件下载，localPath 应该是目录
+				targetPath = filepath.Join(localPath, filepath.Base(remotePath))
+			}
+			if err := s.client.Download(remotePath, targetPath); err != nil {
+				return err
+			}
+			totalCount++
 		}
-		// 递归下载目录
-		count, err := s.client.DownloadDir(remotePath, localPath, &client.DownloadOptions{
-			Recursive:    true,
-			ShowProgress: true,
-		})
-		if err != nil {
-			return err
-		}
-		duration := time.Since(startTime)
-		fmt.Printf("✓ Downloaded %d file(s) in %s\n", count, duration.Round(time.Millisecond))
-		return nil
-	}
-
-	// 下载单个文件
-	if err := s.client.Download(remotePath, localPath); err != nil {
-		return err
 	}
 
 	duration := time.Since(startTime)
-
-	// 显示文件大小和用时
-	if stat, err := os.Stat(localPath); err == nil {
-		fmt.Printf("✓ Downloaded: %s in %s\n", formatSize(stat.Size()), duration.Round(time.Millisecond))
-	}
-
+	fmt.Printf("✓ Downloaded %d file(s) in %s\n", totalCount, duration.Round(time.Millisecond))
 	return nil
 }
 
 // cmdPut 上传文件
 func (s *Shell) cmdPut(args []string) error {
 	if len(args) < 1 {
-		return fmt.Errorf("usage: put [-r] <local_file|pattern> [remote_path]")
+		return fmt.Errorf("usage: put [-r] <local_file|pattern>... [remote_path]")
 	}
 
 	// 解析参数
@@ -441,67 +453,81 @@ func (s *Shell) cmdPut(args []string) error {
 		recursive = true
 		startIdx = 1
 		if len(args) < 2 {
-			return fmt.Errorf("usage: put -r <local_path> [remote_path]")
+			return fmt.Errorf("usage: put -r <local_path>... [remote_path]")
 		}
 	}
 
-	localPath := args[startIdx]
+	// 收集所有本地路径参数
+	localPaths := args[startIdx:]
 	remotePath := "."
-	if len(args) > startIdx+1 {
-		remotePath = args[startIdx+1]
+
+	// 如果最后一个参数是远程目录，则作为目标路径
+	// 判断逻辑：如果有多个参数，且最后一个参数在本地不存在，则视为远程目标路径
+	if len(localPaths) > 1 {
+		lastArg := localPaths[len(localPaths)-1]
+		resolvedLast := s.client.ResolveLocalPath(lastArg)
+		if _, err := os.Stat(resolvedLast); os.IsNotExist(err) {
+			// 最后一个参数本地不存在，视为远程目标路径
+			remotePath = lastArg
+			localPaths = localPaths[:len(localPaths)-1]
+		}
 	}
 
 	// 开始计时
 	startTime := time.Now()
+	totalCount := 0
 
-	// 检查是否包含 glob 模式
-	hasGlob := strings.ContainsAny(localPath, "*?[]")
+	for _, localPath := range localPaths {
+		// 检查是否包含 glob 模式
+		hasGlob := strings.ContainsAny(localPath, "*?[]")
 
-	if hasGlob {
-		// Glob 模式匹配上传
-		count, err := s.client.UploadGlob(localPath, remotePath, &client.UploadOptions{
-			Recursive:    recursive,
-			ShowProgress: true,
-			Concurrency:  client.MaxConcurrentTransfers,
-		})
+		if hasGlob {
+			// Glob 模式匹配上传
+			count, err := s.client.UploadGlob(localPath, remotePath, &client.UploadOptions{
+				Recursive:    recursive,
+				ShowProgress: true,
+				Concurrency:  client.MaxConcurrentTransfers,
+			})
+			if err != nil {
+				return err
+			}
+			totalCount += count
+			continue
+		}
+
+		// 解析本地路径（基于 localWorkDir）
+		resolvedPath := s.client.ResolveLocalPath(localPath)
+
+		// 检查本地文件/目录
+		stat, err := os.Stat(resolvedPath)
 		if err != nil {
 			return err
 		}
-		duration := time.Since(startTime)
-		fmt.Printf("✓ Uploaded %d file(s) in %s\n", count, duration.Round(time.Millisecond))
-		return nil
-	}
 
-	// 检查本地文件/目录
-	stat, err := os.Stat(localPath)
-	if err != nil {
-		return err
-	}
-
-	if stat.IsDir() {
-		if !recursive {
-			return fmt.Errorf("%s is a directory, use 'put -r' for recursive upload", localPath)
+		if stat.IsDir() {
+			if !recursive {
+				return fmt.Errorf("%s is a directory, use 'put -r' for recursive upload", localPath)
+			}
+			// 递归上传目录
+			count, err := s.client.UploadDir(localPath, remotePath, &client.UploadOptions{
+				Recursive:    true,
+				ShowProgress: true,
+			})
+			if err != nil {
+				return err
+			}
+			totalCount += count
+		} else {
+			// 上传单个文件
+			if err := s.client.Upload(localPath, remotePath); err != nil {
+				return err
+			}
+			totalCount++
 		}
-		// 递归上传目录
-		count, err := s.client.UploadDir(localPath, remotePath, &client.UploadOptions{
-			Recursive:    true,
-			ShowProgress: true,
-		})
-		if err != nil {
-			return err
-		}
-		duration := time.Since(startTime)
-		fmt.Printf("✓ Uploaded %d file(s) in %s\n", count, duration.Round(time.Millisecond))
-		return nil
-	}
-
-	// 上传单个文件
-	if err := s.client.Upload(localPath, remotePath); err != nil {
-		return err
 	}
 
 	duration := time.Since(startTime)
-	fmt.Printf("✓ Uploaded successfully (%s) in %s\n", formatSize(stat.Size()), duration.Round(time.Millisecond))
+	fmt.Printf("✓ Uploaded %d file(s) in %s\n", totalCount, duration.Round(time.Millisecond))
 	return nil
 }
 

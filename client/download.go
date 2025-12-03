@@ -19,8 +19,8 @@ func (c *Client) Download(remotePath, localPath string) error {
 
 // DownloadWithProgress 下载文件（支持进度条）
 func (c *Client) DownloadWithProgress(remotePath, localPath string, showProgress bool) error {
-	remotePath = c.resolvePath(remotePath)
-	localPath = c.resolveLocalPath(localPath)
+	remotePath = c.ResolveRemotePath(remotePath)
+	localPath = c.ResolveLocalPath(localPath)
 
 	// 获取远程文件信息
 	stat, err := c.sftpClient.Stat(remotePath)
@@ -83,8 +83,8 @@ func (c *Client) DownloadDir(remoteDir, localDir string, opts *DownloadOptions) 
 		}
 	}
 
-	remoteDir = c.resolvePath(remoteDir)
-	localDir = c.resolveLocalPath(localDir)
+	remoteDir = c.ResolveRemotePath(remoteDir)
+	localDir = c.ResolveLocalPath(localDir)
 
 	// 检查远程目录
 	stat, err := c.sftpClient.Stat(remoteDir)
@@ -150,7 +150,7 @@ func (c *Client) DownloadGlob(pattern, localPath string, opts *DownloadOptions) 
 	}
 
 	// 确保本地目标目录存在
-	localPath = c.resolveLocalPath(localPath)
+	localPath = c.ResolveLocalPath(localPath)
 	if err := os.MkdirAll(localPath, 0755); err != nil {
 		return 0, fmt.Errorf("create local dir: %w", err)
 	}
