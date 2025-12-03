@@ -1,12 +1,14 @@
 package client
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"os"
 	"path"
 	"path/filepath"
 	"strings"
+	"sync"
 
 	"github.com/bmatcuk/doublestar/v4"
 	"github.com/schollz/progressbar/v3"
@@ -45,17 +47,23 @@ func (c *Client) DownloadWithProgress(remotePath, localPath string, showProgress
 	}
 	defer dstFile.Close()
 
+	// 统一获取 buffer
+	bufPtr := c.bufferPool.Get().(*[]byte)
+	defer c.bufferPool.Put(bufPtr)
+
 	// 使用缓冲和进度条
 	if showProgress {
 		bar := progressbar.DefaultBytes(
 			stat.Size(),
 			fmt.Sprintf("Downloading %s", filepath.Base(remotePath)),
 		)
-		_, err = io.Copy(io.MultiWriter(dstFile, bar), srcFile)
+		// _, err = io.Copy(io.MultiWriter(dstFile, bar), srcFile)
+		_, err = io.CopyBuffer(io.MultiWriter(dstFile, bar), srcFile, *bufPtr)
 		fmt.Println() // 换行
 	} else {
-		buf := make([]byte, BufferSize)
-		_, err = io.CopyBuffer(dstFile, srcFile, buf)
+		// buf := make([]byte, BufferSize)
+		// _, err = io.CopyBuffer(dstFile, srcFile, buf)
+		_, err = io.CopyBuffer(dstFile, srcFile, *bufPtr)
 	}
 
 	return err
@@ -136,14 +144,55 @@ func (c *Client) DownloadDir(remoteDir, localDir string, opts *DownloadOptions) 
 	fmt.Printf("Downloading directory with %d file(s)\n", len(files))
 
 	// 下载所有文件
-	count := 0
-	for _, f := range files {
-		if err := c.DownloadWithProgress(f.remotePath, f.localPath, opts.ShowProgress); err != nil {
-			return count, fmt.Errorf("download %s: %w", f.remotePath, err)
-		}
-		count++
+	// count := 0
+	// for _, f := range files {
+	// 	if err := c.DownloadWithProgress(f.remotePath, f.localPath, opts.ShowProgress); err != nil {
+	// 		return count, fmt.Errorf("download %s: %w", f.remotePath, err)
+	// 	}
+	// 	count++
+	// }
+
+	// return count, nil
+
+	concurrency := opts.Concurrency
+	if concurrency <= 0 {
+		concurrency = MaxConcurrentTransfers
+	}
+	if concurrency > len(files) {
+		concurrency = len(files)
 	}
 
+	sem := make(chan struct{}, concurrency)
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+	var errs []error
+	count := 0
+
+	for _, f := range files {
+		wg.Add(1)
+		sem <- struct{}{}
+
+		go func(fi fileInfo) {
+			defer wg.Done()
+			defer func() { <-sem }()
+
+			err := c.DownloadWithProgress(fi.remotePath, fi.localPath, opts.ShowProgress)
+
+			mu.Lock()
+			if err != nil {
+				errs = append(errs, fmt.Errorf("download %s: %w", fi.remotePath, err))
+			} else {
+				count++
+			}
+			mu.Unlock()
+		}(f)
+	}
+
+	wg.Wait()
+
+	if len(errs) > 0 {
+		return count, errors.Join(errs...)
+	}
 	return count, nil
 }
 
@@ -260,32 +309,69 @@ func (c *Client) globRemote(pattern string) ([]string, error) {
 	return matches, nil
 }
 
-// downloadFiles 下载多个文件到指定目录
+// downloadFiles 并发下载多个文件到指定目录
 func (c *Client) downloadFiles(files []string, localDir string, opts *DownloadOptions) (int, error) {
-	count := 0
-	for _, remoteFile := range files {
-		stat, err := c.sftpClient.Stat(remoteFile)
-		if err != nil {
-			continue
-		}
-
-		if stat.IsDir() {
-			// 递归下载目录
-			localSubDir := filepath.Join(localDir, path.Base(remoteFile))
-			n, err := c.DownloadDir(remoteFile, localSubDir, opts)
-			if err != nil {
-				return count, fmt.Errorf("download dir %s: %w", remoteFile, err)
-			}
-			count += n
-		} else {
-			// 下载单个文件
-			localFile := filepath.Join(localDir, path.Base(remoteFile))
-			if err := c.DownloadWithProgress(remoteFile, localFile, opts.ShowProgress); err != nil {
-				return count, fmt.Errorf("download %s: %w", remoteFile, err)
-			}
-			count++
-		}
+	concurrency := opts.Concurrency
+	if concurrency <= 0 {
+		concurrency = MaxConcurrentTransfers
+	}
+	if concurrency > len(files) {
+		concurrency = len(files)
 	}
 
+	// 并发控制
+	sem := make(chan struct{}, concurrency)
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+	var errs []error //收集所有错误
+	count := 0
+
+	for _, remoteFile := range files {
+		wg.Add(1)
+		sem <- struct{}{} // 获取信号量
+
+		go func(rf string) {
+			defer wg.Done()
+			defer func() { <-sem }() // 释放信号量
+
+			stat, err := c.sftpClient.Stat(rf)
+			if err != nil {
+				mu.Lock()
+				errs = append(errs, fmt.Errorf("download %s: %w", rf, err))
+				mu.Unlock()
+				return
+			}
+
+			var n int
+			var opErr error
+
+			if stat.IsDir() {
+				// 递归下载目录
+				localSubDir := filepath.Join(localDir, path.Base(rf))
+				n, opErr = c.DownloadDir(rf, localSubDir, opts)
+			} else {
+				// 下载单个文件
+				localFile := filepath.Join(localDir, path.Base(rf))
+				opErr = c.DownloadWithProgress(rf, localFile, opts.ShowProgress)
+				if opErr == nil {
+					n = 1
+				}
+			}
+
+			mu.Lock()
+			if opErr != nil {
+				errs = append(errs, fmt.Errorf("download %s: %w", rf, opErr))
+			} else {
+				count += n
+			}
+			mu.Unlock()
+		}(remoteFile)
+	}
+
+	wg.Wait()
+	// return count, firstErr
+	if len(errs) > 0 {
+		return count, errors.Join(errs...)
+	}
 	return count, nil
 }

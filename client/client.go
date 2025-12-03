@@ -33,6 +33,8 @@ type Client struct {
 	localWorkDir string                    // 本地当前工作目录
 	dirCache     map[string]*dirCacheEntry // 目录列表缓存
 	cacheMu      sync.RWMutex              // 缓存锁
+	bufferPool   *sync.Pool                //统一的 buff，多文件下载情况下减少 GC 压力
+	dirCreateMu  sync.Map                  // key: dirPath, value: *sync.Mutex
 }
 
 // NewClient 创建 SFTP 客户端
@@ -66,6 +68,12 @@ func NewClient(addr string, config *ssh.ClientConfig) (*Client, error) {
 		workDir:      wd,
 		localWorkDir: localWd,
 		dirCache:     make(map[string]*dirCacheEntry),
+		bufferPool: &sync.Pool{
+			New: func() interface{} {
+				buf := make([]byte, BufferSize)
+				return &buf
+			},
+		},
 	}, nil
 }
 
@@ -79,3 +87,13 @@ func (c *Client) Close() error {
 	}
 	return nil
 }
+
+// func (c *Client) getBuffer() []byte {
+// 	buf := c.bufferPool.Get()
+// 	if b, ok := buf.(*[]byte); ok {
+// 		return *b
+// 	}
+// 	// 后备方案
+// 	return make([]byte, BufferSize)
+// }
+// bufPtr := c.bufferPool.Get().(*[]byte)  // 未检查类型断言是否成功会不会出错?
