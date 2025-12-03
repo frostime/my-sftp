@@ -79,6 +79,8 @@ func (s *Shell) Run() error {
 	return nil
 }
 
+// ==================== Internal ====================
+
 // executeCommand 执行命令
 func (s *Shell) executeCommand(line string) error {
 	// 检查 !! 前缀（本地命令）- 必须先检查 !! 再检查 !
@@ -235,20 +237,20 @@ Available commands:
     cd <dir>              Change remote directory
     ls [dir]              List remote directory contents
     ll [dir]              List with details (alias of ls)
-  
+
   Local Navigation:
     lpwd                   Print local working directory
     lcd <dir>             Change local directory
     lls [dir]             List local directory contents
     lmkdir <dir>          Create local directory
-  
+
   File Transfer:
     get [-r] <remote|pattern> [local]  Download file(s) or directory from server
     put [-r] <local|pattern> [remote]  Upload file(s) or directory to server
-    
+
     Options:
       -r                   Recursive mode for directories
-    
+
     Examples:
       get file.txt                   Download single file
       get *.log logs/                Download all .log files
@@ -258,25 +260,25 @@ Available commands:
       put *.log logs/                Upload all .log files
       put **/*.go code/              Upload all .go files recursively
       put -r mydir remotedir/        Upload entire directory
-  
+
   Remote File Operations:
     rm <path>             Remove file or directory
     mkdir <dir>           Create directory
     rmdir <dir>           Remove directory
     rename <old> <new>    Rename file or directory
     stat <path>           Show file information
-  
+
   Shell Commands:
     ! <command>           Execute command on remote server
     !! <command>          Execute command on local machine
-    
+
     Examples:
       ! tree -L 2              List remote directory tree
       ! cat config.yaml        View remote file content
       ! df -h                  Check remote disk usage
       !! dir                   List local directory (Windows)
       !! ls -la                List local directory (Linux/Mac)
-  
+
   Other:
     help                  Show this help
     exit/quit/q           Exit program

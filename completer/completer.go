@@ -81,12 +81,12 @@ func (c *Completer) Do(line []rune, pos int) (newLine [][]rune, length int) {
 	}
 }
 
-// func removePrefix(text string, prefix string) string {
-// 	if strings.HasPrefix(text, prefix) {
-// 		return text[len(prefix):]
-// 	}
-// 	return text
-// }
+// ToReadline 转换为 readline 的 AutoCompleter
+func (c *Completer) ToReadline() readline.AutoCompleter {
+	return readline.NewPrefixCompleter()
+}
+
+// ========================== Internal Helpers ==========================
 
 func removePrefix(candidates [][]rune, prefix string) [][]rune {
 	var results [][]rune
@@ -240,9 +240,4 @@ func longestCommonPrefix(strs []string) string {
 		}
 	}
 	return prefix
-}
-
-// ToReadline 转换为 readline 的 AutoCompleter
-func (c *Completer) ToReadline() readline.AutoCompleter {
-	return readline.NewPrefixCompleter()
 }
