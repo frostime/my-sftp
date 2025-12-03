@@ -215,13 +215,14 @@ func (c *Client) ensureRemoteDir(dir string) error {
 		return nil
 	}
 
-	// 确保同一目录只有一个 goroutine 在创建
+	// 使用 singleflight 确保同一目录只创建一次
 	_, err, _ := c.dirCreateGroup.Do(dir, func() (interface{}, error) {
+		// double check
 		if stat, err := c.sftpClient.Stat(dir); err == nil && stat.IsDir() {
 			return nil, nil
 		}
 
-		// 先递归创建父目录（在加锁之前）
+		// 先递归创建父目录
 		parent := path.Dir(dir)
 		if parent != "/" && parent != "." {
 			if err := c.ensureRemoteDir(parent); err != nil {
@@ -229,16 +230,16 @@ func (c *Client) ensureRemoteDir(dir string) error {
 			}
 		}
 
-		// 然后才获取锁创建当前目录
-		mu := c.getDirLock(dir)
-		mu.Lock()
-		defer mu.Unlock()
-
-		if stat, err := c.sftpClient.Stat(dir); err == nil && stat.IsDir() {
-			return nil, nil
-		}
+		// 有 singleflight 保证，这里不需要额外加锁
+		// mu := c.getDirLock(dir)
+		// mu.Lock()
+		// defer mu.Unlock()
+		// if stat, err := c.sftpClient.Stat(dir); err == nil && stat.IsDir() {
+		// 	return nil, nil
+		// }
 
 		if err := c.sftpClient.Mkdir(dir); err != nil {
+			// 最后一次检查（防止服务器端刚巧被别人创建了）
 			if stat, statErr := c.sftpClient.Stat(dir); statErr == nil && stat.IsDir() {
 				return nil, nil
 			}

@@ -2,7 +2,6 @@ package client
 
 import (
 	"fmt"
-	"hash/fnv"
 	"os"
 	"sync"
 	"time"
@@ -19,8 +18,7 @@ const (
 	MaxConcurrentTransfers = 4
 	// DirCacheTimeout 目录列表缓存超时时间
 	DirCacheTimeout = 30 * time.Second
-	// DirLockShards 目录锁分片数量
-	DirLockShards = 64
+	// DirLockShards = 64 //目录锁分片数量
 )
 
 // dirCacheEntry 目录缓存条目
@@ -31,15 +29,15 @@ type dirCacheEntry struct {
 
 // Client SFTP 客户端封装
 type Client struct {
-	sshClient      *ssh.Client
-	sftpClient     *sftp.Client
-	workDir        string                    // 远程当前工作目录
-	localWorkDir   string                    // 本地当前工作目录
-	dirCache       map[string]*dirCacheEntry // 目录列表缓存
-	cacheMu        sync.RWMutex              // 缓存锁
-	bufferPool     *sync.Pool                // 统一的 buffer pool，减少 GC 压力
-	dirLocks       [DirLockShards]sync.Mutex // 分片锁，用于目录创建的并发控制
-	dirCreateGroup singleflight.Group        // 确保同一目录只创建一次
+	sshClient    *ssh.Client
+	sftpClient   *sftp.Client
+	workDir      string                    // 远程当前工作目录
+	localWorkDir string                    // 本地当前工作目录
+	dirCache     map[string]*dirCacheEntry // 目录列表缓存
+	cacheMu      sync.RWMutex              // 缓存锁
+	bufferPool   *sync.Pool                // 统一的 buffer pool，减少 GC 压力
+	// dirLocks       [DirLockShards]sync.Mutex // 分片锁，用于目录创建的并发控制, 引入 singleflight 后也许不需要了
+	dirCreateGroup singleflight.Group // 确保同一目录只创建一次
 }
 
 // NewClient 创建 SFTP 客户端
@@ -109,9 +107,10 @@ func (c *Client) putBuffer(buf []byte) {
 }
 
 // getDirLock 通过哈希获取目录专属的分片锁
-func (c *Client) getDirLock(dir string) *sync.Mutex {
-	h := fnv.New32a()
-	h.Write([]byte(dir))
-	idx := h.Sum32() % DirLockShards
-	return &c.dirLocks[idx]
-}
+// 似乎不需要了, 因为引入 Singleflight，进入到内部代码块的已经是单线程环境了，临界区内不存在竞争
+// func (c *Client) getDirLock(dir string) *sync.Mutex {
+// 	h := fnv.New32a()
+// 	h.Write([]byte(dir))
+// 	idx := h.Sum32() % DirLockShards
+// 	return &c.dirLocks[idx]
+// }
