@@ -157,47 +157,55 @@ func parseCommandLine(line string) []string {
 	var current strings.Builder
 	inQuote := false
 	quoteChar := rune(0)
+	escaped := false
 
-	for i, r := range line {
-		switch {
-		case r == '"' || r == '\'':
-			if !inQuote {
-				// 开始引号
+	for _, r := range line {
+		if escaped {
+			// 上一个是反斜杠：当前字符一律当普通字符写入
+			current.WriteRune(r)
+			escaped = false
+			continue
+		}
+
+		switch r {
+		case '\\':
+			// 下一个字符被转义
+			escaped = true
+
+		case '"', '\'':
+			if inQuote {
+				if r == quoteChar {
+					// 结束当前引号
+					inQuote = false
+					quoteChar = 0
+				} else {
+					// 引号内的另一种引号，直接写入
+					current.WriteRune(r)
+				}
+			} else {
+				// 开始新的引号
 				inQuote = true
 				quoteChar = r
-			} else if r == quoteChar {
-				// 结束引号
-				inQuote = false
-				quoteChar = 0
-			} else {
-				// 引号内的不同引号字符
-				current.WriteRune(r)
 			}
-		case r == ' ' || r == '\t':
+
+		case ' ', '\t':
 			if inQuote {
-				// 引号内的空格保留
 				current.WriteRune(r)
 			} else if current.Len() > 0 {
-				// 字段结束
 				fields = append(fields, current.String())
 				current.Reset()
 			}
-		case r == '\\':
-			// 转义字符
-			if i+1 < len(line) {
-				next := rune(line[i+1])
-				if next == '"' || next == '\'' || next == '\\' {
-					// 跳过当前的反斜杠，下一个字符会被正常添加
-					continue
-				}
-			}
-			current.WriteRune(r)
+
 		default:
 			current.WriteRune(r)
 		}
 	}
 
-	// 添加最后一个字段
+	// 末尾还有内容就收尾
+	if escaped {
+		// 行尾单独一个反斜杠，就把它当普通字符
+		current.WriteRune('\\')
+	}
 	if current.Len() > 0 {
 		fields = append(fields, current.String())
 	}
