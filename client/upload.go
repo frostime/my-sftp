@@ -6,7 +6,6 @@ import (
 	"os"
 	"path"
 	"path/filepath"
-	"sync"
 
 	"github.com/bmatcuk/doublestar/v4"
 	"github.com/schollz/progressbar/v3"
@@ -19,8 +18,8 @@ func (c *Client) Upload(localPath, remotePath string) error {
 
 // UploadWithProgress 上传文件（支持进度条）
 func (c *Client) UploadWithProgress(localPath, remotePath string, showProgress bool) error {
-	localPath = c.resolveLocalPath(localPath)
-	remotePath = c.resolvePath(remotePath)
+	localPath = c.ResolveLocalPath(localPath)
+	remotePath = c.ResolveRemotePath(remotePath)
 
 	// 获取本地文件信息
 	stat, err := os.Stat(localPath)
@@ -45,16 +44,19 @@ func (c *Client) UploadWithProgress(localPath, remotePath string, showProgress b
 	}
 	defer dstFile.Close()
 
+	// 统一获取 buffer（安全的类型断言）
+	buf := c.getBuffer()
+	defer c.putBuffer(buf)
+
 	// 使用缓冲和进度条
 	if showProgress {
 		bar := progressbar.DefaultBytes(
 			stat.Size(),
 			fmt.Sprintf("Uploading %s", filepath.Base(localPath)),
 		)
-		_, err = io.Copy(io.MultiWriter(dstFile, bar), srcFile)
+		_, err = io.CopyBuffer(io.MultiWriter(dstFile, bar), srcFile, buf)
 		fmt.Println() // 换行
 	} else {
-		buf := make([]byte, BufferSize)
 		_, err = io.CopyBuffer(dstFile, srcFile, buf)
 	}
 
@@ -66,12 +68,17 @@ type UploadOptions struct {
 	Recursive    bool // 递归上传目录
 	ShowProgress bool // 显示进度条
 	Concurrency  int  // 并发数
+	MaxDepth     int  // 最大递归深度：-1=无限, 0=仅当前目录, 1=一层子目录...
 }
 
 // UploadGlob 使用 glob 模式匹配上传文件
 func (c *Client) UploadGlob(pattern, remotePath string, opts *UploadOptions) (int, error) {
 	if opts == nil {
-		opts = &UploadOptions{ShowProgress: true, Concurrency: MaxConcurrentTransfers}
+		opts = &UploadOptions{
+			ShowProgress: true,
+			Concurrency:  MaxConcurrentTransfers,
+			MaxDepth:     -1,
+		}
 	}
 
 	// 解析 glob 模式
@@ -91,40 +98,73 @@ func (c *Client) UploadGlob(pattern, remotePath string, opts *UploadOptions) (in
 		return 0, fmt.Errorf("no files match pattern: %s", pattern)
 	}
 
-	// 过滤掉目录（除非启用递归模式）
-	var files []string
+	remotePath = c.ResolveRemotePath(remotePath)
+
+	// 收集所有上传任务
+	var tasks []transferTask
 	for _, match := range matches {
 		stat, err := os.Stat(match)
 		if err != nil {
 			continue
 		}
-		if stat.IsDir() && !opts.Recursive {
-			continue
+
+		if stat.IsDir() {
+			if !opts.Recursive {
+				continue // 非递归模式跳过目录
+			}
+			// 递归收集目录内的文件
+			remoteSubDir := path.Join(remotePath, filepath.Base(match))
+			subTasks, err := c.collectUploadTasks(match, remoteSubDir, opts.MaxDepth, 0)
+			if err != nil {
+				return 0, fmt.Errorf("collect tasks for %s: %w", match, err)
+			}
+			tasks = append(tasks, subTasks...)
+		} else {
+			remoteFile := path.Join(remotePath, filepath.Base(match))
+			tasks = append(tasks, transferTask{
+				localPath:  match,
+				remotePath: remoteFile,
+				isUpload:   true,
+				size:       stat.Size(),
+			})
 		}
-		files = append(files, match)
 	}
 
-	if len(files) == 0 {
+	if len(tasks) == 0 {
 		return 0, fmt.Errorf("no files to upload")
 	}
 
-	fmt.Printf("Found %d file(s) to upload\n", len(files))
+	fmt.Printf("Found %d file(s) to upload\n", len(tasks))
 
-	// 确保远程目标是目录
-	remotePath = c.resolvePath(remotePath)
+	// 确保所有远程目录存在
+	dirs := c.collectRemoteDirsForUpload(tasks)
+	if err := c.ensureRemoteDirsExist(dirs); err != nil {
+		return 0, fmt.Errorf("create remote dirs: %w", err)
+	}
 
-	// 并发上传
-	return c.uploadFiles(files, remotePath, opts)
+	// 使用统一执行引擎
+	transferOpts := &TransferOptions{
+		Recursive:    opts.Recursive,
+		ShowProgress: opts.ShowProgress,
+		Concurrency:  opts.Concurrency,
+		MaxDepth:     opts.MaxDepth,
+	}
+	return c.executeTasks(tasks, transferOpts)
 }
 
 // UploadDir 递归上传整个目录
+// 使用统一的任务收集+执行模式，避免并发嵌套
 func (c *Client) UploadDir(localDir, remoteDir string, opts *UploadOptions) (int, error) {
 	if opts == nil {
-		opts = &UploadOptions{ShowProgress: true, Concurrency: MaxConcurrentTransfers}
+		opts = &UploadOptions{
+			ShowProgress: true,
+			Concurrency:  MaxConcurrentTransfers,
+			MaxDepth:     -1,
+		}
 	}
 
-	localDir = c.resolveLocalPath(localDir)
-	remoteDir = c.resolvePath(remoteDir)
+	localDir = c.ResolveLocalPath(localDir)
+	remoteDir = c.ResolveRemotePath(remoteDir)
 
 	// 检查本地目录
 	stat, err := os.Stat(localDir)
@@ -135,124 +175,80 @@ func (c *Client) UploadDir(localDir, remoteDir string, opts *UploadOptions) (int
 		return 0, fmt.Errorf("not a directory: %s", localDir)
 	}
 
-	// 收集所有文件
-	var files []string
-	err = filepath.Walk(localDir, func(path string, info os.FileInfo, err error) error {
-		if err != nil {
-			return err
-		}
-		if !info.IsDir() {
-			files = append(files, path)
-		}
-		return nil
-	})
+	// 收集所有上传任务（不执行）
+	tasks, err := c.collectUploadTasks(localDir, remoteDir, opts.MaxDepth, 0)
 	if err != nil {
-		return 0, fmt.Errorf("walk directory: %w", err)
+		return 0, fmt.Errorf("collect upload tasks: %w", err)
 	}
 
-	if len(files) == 0 {
+	if len(tasks) == 0 {
 		return 0, fmt.Errorf("no files found in directory")
 	}
 
-	fmt.Printf("Uploading directory with %d file(s)\n", len(files))
+	fmt.Printf("Uploading directory with %d file(s)\n", len(tasks))
 
-	// 创建远程目录结构
-	if err := c.ensureRemoteDir(remoteDir); err != nil {
-		return 0, err
+	// 确保所有远程目录存在（包括根目录）
+	dirs := c.collectRemoteDirsForUpload(tasks)
+	// 添加根目录
+	dirs = append([]string{remoteDir}, dirs...)
+	if err := c.ensureRemoteDirsExist(dirs); err != nil {
+		return 0, fmt.Errorf("create remote dirs: %w", err)
 	}
 
-	// 上传所有文件
-	count := 0
-	for _, localFile := range files {
-		// 计算相对路径
-		relPath, err := filepath.Rel(localDir, localFile)
-		if err != nil {
-			return count, err
-		}
-		remotePath := path.Join(remoteDir, filepath.ToSlash(relPath))
-
-		// 确保远程父目录存在
-		remoteParent := path.Dir(remotePath)
-		if err := c.ensureRemoteDir(remoteParent); err != nil {
-			return count, err
-		}
-
-		// 上传文件
-		if err := c.UploadWithProgress(localFile, remotePath, opts.ShowProgress); err != nil {
-			return count, fmt.Errorf("upload %s: %w", relPath, err)
-		}
-		count++
+	// 使用统一执行引擎
+	transferOpts := &TransferOptions{
+		Recursive:    opts.Recursive,
+		ShowProgress: opts.ShowProgress,
+		Concurrency:  opts.Concurrency,
+		MaxDepth:     opts.MaxDepth,
 	}
-
-	return count, nil
-}
-
-// uploadFiles 并发上传多个文件
-func (c *Client) uploadFiles(files []string, remotePath string, opts *UploadOptions) (int, error) {
-	concurrency := opts.Concurrency
-	if concurrency <= 0 {
-		concurrency = MaxConcurrentTransfers
-	}
-	if concurrency > len(files) {
-		concurrency = len(files)
-	}
-
-	// 创建工作池
-	sem := make(chan struct{}, concurrency)
-	var wg sync.WaitGroup
-	var mu sync.Mutex
-	var firstErr error
-	count := 0
-
-	for _, localFile := range files {
-		wg.Add(1)
-		sem <- struct{}{} // 获取信号量
-
-		go func(lf string) {
-			defer wg.Done()
-			defer func() { <-sem }() // 释放信号量
-
-			// 确定远程文件名
-			rf := path.Join(remotePath, filepath.Base(lf))
-
-			// 上传
-			err := c.UploadWithProgress(lf, rf, opts.ShowProgress)
-
-			mu.Lock()
-			defer mu.Unlock()
-			if err != nil && firstErr == nil {
-				firstErr = err
-			} else if err == nil {
-				count++
-			}
-		}(localFile)
-	}
-
-	wg.Wait()
-	return count, firstErr
+	return c.executeTasks(tasks, transferOpts)
 }
 
 // ensureRemoteDir 确保远程目录存在
+// 确保同一目录只创建一次，避免并发竞争
 func (c *Client) ensureRemoteDir(dir string) error {
-	dir = c.resolvePath(dir)
+	dir = c.ResolveRemotePath(dir)
 
-	// 检查目录是否存在
-	if _, err := c.sftpClient.Stat(dir); err == nil {
+	// 快速路径：目录已存在
+	if stat, err := c.sftpClient.Stat(dir); err == nil && stat.IsDir() {
 		return nil
 	}
 
-	// 递归创建父目录
-	parent := path.Dir(dir)
-	if parent != "/" && parent != "." {
-		if err := c.ensureRemoteDir(parent); err != nil {
-			return err
+	// 使用 singleflight 确保同一目录只创建一次
+	_, err, _ := c.dirCreateGroup.Do(dir, func() (interface{}, error) {
+		// double check
+		if stat, err := c.sftpClient.Stat(dir); err == nil && stat.IsDir() {
+			return nil, nil
 		}
-	}
 
-	// 创建目录
-	err := c.sftpClient.Mkdir(dir)
-	if err == nil {
+		// 先递归创建父目录
+		parent := path.Dir(dir)
+		if parent != "/" && parent != "." {
+			if err := c.ensureRemoteDir(parent); err != nil {
+				return nil, err
+			}
+		}
+
+		// 有 singleflight 保证，这里不需要额外加锁
+		// mu := c.getDirLock(dir)
+		// mu.Lock()
+		// defer mu.Unlock()
+		// if stat, err := c.sftpClient.Stat(dir); err == nil && stat.IsDir() {
+		// 	return nil, nil
+		// }
+
+		if err := c.sftpClient.Mkdir(dir); err != nil {
+			// 最后一次检查（防止服务器端刚巧被别人创建了）
+			if stat, statErr := c.sftpClient.Stat(dir); statErr == nil && stat.IsDir() {
+				return nil, nil
+			}
+			return nil, err
+		}
+
 		c.invalidateDirCache(parent)
-	}
+		return nil, nil
+	})
+
 	return err
 }

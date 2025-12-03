@@ -22,7 +22,7 @@ func (c *Client) GetLocalwd() string {
 
 // LocalChdir 切换本地工作目录
 func (c *Client) LocalChdir(dir string) error {
-	targetPath := c.resolveLocalPath(dir)
+	targetPath := c.ResolveLocalPath(dir)
 	stat, err := os.Stat(targetPath)
 	if err != nil {
 		return fmt.Errorf("stat: %w", err)
@@ -36,7 +36,7 @@ func (c *Client) LocalChdir(dir string) error {
 
 // LocalList 列出本地目录内容
 func (c *Client) LocalList(dir string) ([]os.FileInfo, error) {
-	targetPath := c.resolveLocalPath(dir)
+	targetPath := c.ResolveLocalPath(dir)
 	entries, err := os.ReadDir(targetPath)
 	if err != nil {
 		return nil, err
@@ -54,13 +54,13 @@ func (c *Client) LocalList(dir string) ([]os.FileInfo, error) {
 
 // LocalMkdir 创建本地目录
 func (c *Client) LocalMkdir(dir string) error {
-	dir = c.resolveLocalPath(dir)
+	dir = c.ResolveLocalPath(dir)
 	return os.Mkdir(dir, 0755)
 }
 
 // Chdir 切换工作目录
 func (c *Client) Chdir(dir string) error {
-	targetPath := c.resolvePath(dir)
+	targetPath := c.ResolveRemotePath(dir)
 	stat, err := c.sftpClient.Stat(targetPath)
 	if err != nil {
 		return fmt.Errorf("stat: %w", err)
@@ -76,7 +76,7 @@ func (c *Client) Chdir(dir string) error {
 
 // List 列出目录内容
 func (c *Client) List(dir string) ([]os.FileInfo, error) {
-	targetPath := c.resolvePath(dir)
+	targetPath := c.ResolveRemotePath(dir)
 
 	// 检查缓存
 	c.cacheMu.RLock()
@@ -108,7 +108,7 @@ func (c *Client) List(dir string) ([]os.FileInfo, error) {
 
 // Remove 删除文件或目录
 func (c *Client) Remove(remotePath string) error {
-	remotePath = c.resolvePath(remotePath)
+	remotePath = c.ResolveRemotePath(remotePath)
 	stat, err := c.sftpClient.Stat(remotePath)
 	if err != nil {
 		return err
@@ -154,7 +154,7 @@ func (c *Client) removeDir(dir string) error {
 
 // Mkdir 创建目录
 func (c *Client) Mkdir(dir string) error {
-	dir = c.resolvePath(dir)
+	dir = c.ResolveRemotePath(dir)
 	err := c.sftpClient.Mkdir(dir)
 	if err == nil {
 		// 清除父目录缓存
@@ -165,8 +165,8 @@ func (c *Client) Mkdir(dir string) error {
 
 // Rename 重命名文件或目录
 func (c *Client) Rename(oldPath, newPath string) error {
-	oldPath = c.resolvePath(oldPath)
-	newPath = c.resolvePath(newPath)
+	oldPath = c.ResolveRemotePath(oldPath)
+	newPath = c.ResolveRemotePath(newPath)
 	err := c.sftpClient.Rename(oldPath, newPath)
 	if err == nil {
 		// 清除相关目录缓存
@@ -178,7 +178,7 @@ func (c *Client) Rename(oldPath, newPath string) error {
 
 // Stat 获取文件信息
 func (c *Client) Stat(remotePath string) (os.FileInfo, error) {
-	remotePath = c.resolvePath(remotePath)
+	remotePath = c.ResolveRemotePath(remotePath)
 	return c.sftpClient.Stat(remotePath)
 }
 
@@ -186,7 +186,7 @@ func (c *Client) Stat(remotePath string) (os.FileInfo, error) {
 // 返回基于用户输入prefix的完整候选路径（保持prefix的格式：绝对/相对）
 func (c *Client) ListCompletion(prefix string) []string {
 	// 解析目录和部分文件名
-	resolvedPath := c.resolvePath(prefix)
+	resolvedPath := c.ResolveRemotePath(prefix)
 	dir, partial := path.Split(resolvedPath)
 	if dir == "" {
 		dir = c.workDir
@@ -217,8 +217,8 @@ func (c *Client) ListCompletion(prefix string) []string {
 	return matches
 }
 
-// resolvePath 解析远程路径（相对路径转绝对路径）
-func (c *Client) resolvePath(p string) string {
+// ResolveRemotePath 解析远程路径（相对路径转绝对路径）
+func (c *Client) ResolveRemotePath(p string) string {
 	if p == "" {
 		return c.workDir
 	}
@@ -240,8 +240,8 @@ func (c *Client) resolvePath(p string) string {
 	return path.Clean(path.Join(c.workDir, p))
 }
 
-// resolveLocalPath 解析本地路径（相对路径转绝对路径）
-func (c *Client) resolveLocalPath(p string) string {
+// ResolveLocalPath 解析本地路径（相对路径转绝对路径）
+func (c *Client) ResolveLocalPath(p string) string {
 	if p == "" {
 		return c.localWorkDir
 	}
@@ -272,7 +272,7 @@ func (c *Client) ClearDirCache() {
 
 // invalidateDirCache 清除指定目录的缓存
 func (c *Client) invalidateDirCache(dir string) {
-	dir = c.resolvePath(dir)
+	dir = c.ResolveRemotePath(dir)
 	c.cacheMu.Lock()
 	delete(c.dirCache, dir)
 	c.cacheMu.Unlock()

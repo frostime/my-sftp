@@ -19,8 +19,8 @@ func (c *Client) Download(remotePath, localPath string) error {
 
 // DownloadWithProgress 下载文件（支持进度条）
 func (c *Client) DownloadWithProgress(remotePath, localPath string, showProgress bool) error {
-	remotePath = c.resolvePath(remotePath)
-	localPath = c.resolveLocalPath(localPath)
+	remotePath = c.ResolveRemotePath(remotePath)
+	localPath = c.ResolveLocalPath(localPath)
 
 	// 获取远程文件信息
 	stat, err := c.sftpClient.Stat(remotePath)
@@ -45,16 +45,19 @@ func (c *Client) DownloadWithProgress(remotePath, localPath string, showProgress
 	}
 	defer dstFile.Close()
 
+	// 统一获取 buffer（安全的类型断言）
+	buf := c.getBuffer()
+	defer c.putBuffer(buf)
+
 	// 使用缓冲和进度条
 	if showProgress {
 		bar := progressbar.DefaultBytes(
 			stat.Size(),
 			fmt.Sprintf("Downloading %s", filepath.Base(remotePath)),
 		)
-		_, err = io.Copy(io.MultiWriter(dstFile, bar), srcFile)
+		_, err = io.CopyBuffer(io.MultiWriter(dstFile, bar), srcFile, buf)
 		fmt.Println() // 换行
 	} else {
-		buf := make([]byte, BufferSize)
 		_, err = io.CopyBuffer(dstFile, srcFile, buf)
 	}
 
@@ -66,16 +69,22 @@ type DownloadOptions struct {
 	Recursive    bool // 递归下载目录
 	ShowProgress bool // 显示进度条
 	Concurrency  int  // 并发数
+	MaxDepth     int  // 最大递归深度：-1=无限, 0=仅当前目录, 1=一层子目录...
 }
 
 // DownloadDir 递归下载整个目录
+// 使用统一的任务收集+执行模式，避免并发嵌套
 func (c *Client) DownloadDir(remoteDir, localDir string, opts *DownloadOptions) (int, error) {
 	if opts == nil {
-		opts = &DownloadOptions{ShowProgress: true, Concurrency: MaxConcurrentTransfers}
+		opts = &DownloadOptions{
+			ShowProgress: true,
+			Concurrency:  MaxConcurrentTransfers,
+			MaxDepth:     -1,
+		}
 	}
 
-	remoteDir = c.resolvePath(remoteDir)
-	localDir = c.resolveLocalPath(localDir)
+	remoteDir = c.ResolveRemotePath(remoteDir)
+	localDir = c.ResolveLocalPath(localDir)
 
 	// 检查远程目录
 	stat, err := c.sftpClient.Stat(remoteDir)
@@ -86,71 +95,41 @@ func (c *Client) DownloadDir(remoteDir, localDir string, opts *DownloadOptions) 
 		return 0, fmt.Errorf("not a directory: %s", remoteDir)
 	}
 
-	// 收集所有文件
-	type fileInfo struct {
-		remotePath string
-		localPath  string
-	}
-	var files []fileInfo
-
-	var walk func(string, string) error
-	walk = func(rPath, lPath string) error {
-		entries, err := c.sftpClient.ReadDir(rPath)
-		if err != nil {
-			return err
-		}
-
-		for _, entry := range entries {
-			rFile := path.Join(rPath, entry.Name())
-			lFile := filepath.Join(lPath, entry.Name())
-
-			if entry.IsDir() {
-				// 创建本地目录
-				if err := os.MkdirAll(lFile, 0755); err != nil {
-					return err
-				}
-				// 递归
-				if err := walk(rFile, lFile); err != nil {
-					return err
-				}
-			} else {
-				files = append(files, fileInfo{rFile, lFile})
-			}
-		}
-		return nil
-	}
-
 	// 确保本地目录存在
 	if err := os.MkdirAll(localDir, 0755); err != nil {
 		return 0, fmt.Errorf("create local dir: %w", err)
 	}
 
-	if err := walk(remoteDir, localDir); err != nil {
-		return 0, fmt.Errorf("walk remote directory: %w", err)
+	// 收集所有下载任务（不执行）
+	tasks, err := c.collectDownloadTasks(remoteDir, localDir, opts.MaxDepth, 0)
+	if err != nil {
+		return 0, fmt.Errorf("collect download tasks: %w", err)
 	}
 
-	if len(files) == 0 {
+	if len(tasks) == 0 {
 		return 0, nil
 	}
 
-	fmt.Printf("Downloading directory with %d file(s)\n", len(files))
+	fmt.Printf("Downloading directory with %d file(s)\n", len(tasks))
 
-	// 下载所有文件
-	count := 0
-	for _, f := range files {
-		if err := c.DownloadWithProgress(f.remotePath, f.localPath, opts.ShowProgress); err != nil {
-			return count, fmt.Errorf("download %s: %w", f.remotePath, err)
-		}
-		count++
+	// 使用统一执行引擎
+	transferOpts := &TransferOptions{
+		Recursive:    opts.Recursive,
+		ShowProgress: opts.ShowProgress,
+		Concurrency:  opts.Concurrency,
+		MaxDepth:     opts.MaxDepth,
 	}
-
-	return count, nil
+	return c.executeTasks(tasks, transferOpts)
 }
 
 // DownloadGlob 使用 glob 模式匹配下载远程文件
 func (c *Client) DownloadGlob(pattern, localPath string, opts *DownloadOptions) (int, error) {
 	if opts == nil {
-		opts = &DownloadOptions{ShowProgress: true, Concurrency: MaxConcurrentTransfers}
+		opts = &DownloadOptions{
+			ShowProgress: true,
+			Concurrency:  MaxConcurrentTransfers,
+			MaxDepth:     -1,
+		}
 	}
 
 	// 解析 glob 模式的基路径
@@ -170,33 +149,59 @@ func (c *Client) DownloadGlob(pattern, localPath string, opts *DownloadOptions) 
 		return 0, fmt.Errorf("no files match pattern: %s", pattern)
 	}
 
-	// 过滤掉目录（除非启用递归模式）
-	var files []string
+	// 确保本地目标目录存在
+	localPath = c.ResolveLocalPath(localPath)
+	if err := os.MkdirAll(localPath, 0755); err != nil {
+		return 0, fmt.Errorf("create local dir: %w", err)
+	}
+
+	// 收集所有下载任务
+	var tasks []transferTask
 	for _, match := range matches {
 		stat, err := c.sftpClient.Stat(match)
 		if err != nil {
 			continue
 		}
-		if stat.IsDir() && !opts.Recursive {
-			continue
+
+		if stat.IsDir() {
+			if !opts.Recursive {
+				continue // 非递归模式跳过目录
+			}
+			// 递归收集目录内的文件
+			localSubDir := filepath.Join(localPath, path.Base(match))
+			if err := os.MkdirAll(localSubDir, 0755); err != nil {
+				return 0, fmt.Errorf("create local dir %s: %w", localSubDir, err)
+			}
+			subTasks, err := c.collectDownloadTasks(match, localSubDir, opts.MaxDepth, 0)
+			if err != nil {
+				return 0, fmt.Errorf("collect tasks for %s: %w", match, err)
+			}
+			tasks = append(tasks, subTasks...)
+		} else {
+			localFile := filepath.Join(localPath, path.Base(match))
+			tasks = append(tasks, transferTask{
+				localPath:  localFile,
+				remotePath: match,
+				isUpload:   false,
+				size:       stat.Size(),
+			})
 		}
-		files = append(files, match)
 	}
 
-	if len(files) == 0 {
+	if len(tasks) == 0 {
 		return 0, fmt.Errorf("no files to download")
 	}
 
-	fmt.Printf("Found %d file(s) to download\n", len(files))
+	fmt.Printf("Found %d file(s) to download\n", len(tasks))
 
-	// 确保本地目标目录存在
-	localPath = c.resolveLocalPath(localPath)
-	if err := os.MkdirAll(localPath, 0755); err != nil {
-		return 0, fmt.Errorf("create local dir: %w", err)
+	// 使用统一执行引擎
+	transferOpts := &TransferOptions{
+		Recursive:    opts.Recursive,
+		ShowProgress: opts.ShowProgress,
+		Concurrency:  opts.Concurrency,
+		MaxDepth:     opts.MaxDepth,
 	}
-
-	// 下载文件
-	return c.downloadFiles(files, localPath, opts)
+	return c.executeTasks(tasks, transferOpts)
 }
 
 // globRemote 在远程文件系统上执行 glob 匹配
@@ -258,34 +263,4 @@ func (c *Client) globRemote(pattern string) ([]string, error) {
 	}
 
 	return matches, nil
-}
-
-// downloadFiles 下载多个文件到指定目录
-func (c *Client) downloadFiles(files []string, localDir string, opts *DownloadOptions) (int, error) {
-	count := 0
-	for _, remoteFile := range files {
-		stat, err := c.sftpClient.Stat(remoteFile)
-		if err != nil {
-			continue
-		}
-
-		if stat.IsDir() {
-			// 递归下载目录
-			localSubDir := filepath.Join(localDir, path.Base(remoteFile))
-			n, err := c.DownloadDir(remoteFile, localSubDir, opts)
-			if err != nil {
-				return count, fmt.Errorf("download dir %s: %w", remoteFile, err)
-			}
-			count += n
-		} else {
-			// 下载单个文件
-			localFile := filepath.Join(localDir, path.Base(remoteFile))
-			if err := c.DownloadWithProgress(remoteFile, localFile, opts.ShowProgress); err != nil {
-				return count, fmt.Errorf("download %s: %w", remoteFile, err)
-			}
-			count++
-		}
-	}
-
-	return count, nil
 }

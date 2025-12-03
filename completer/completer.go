@@ -157,7 +157,8 @@ func (c *Completer) completeLocalPath(prefix string) [][]rune {
 	dir, partial := filepath.Split(prefix)
 	searchDir := dir
 	if searchDir == "" {
-		searchDir = "."
+		// 使用 SFTP shell 的本地工作目录，而不是进程当前目录
+		searchDir = c.client.GetLocalwd()
 	}
 
 	// 处理 ~ 前缀
