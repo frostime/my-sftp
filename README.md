@@ -1,21 +1,28 @@
 # My-SFTP
 
-🚀 **一个基于 Go 实现的 SFTP CLI 工具。**
+[![Go Version](https://img.shields.io/github/go-mod/go-version/frostime/my-sftp)](go.mod)
+[![License](https://img.shields.io/badge/license-GPLv3-blue)](LICENSE)
 
-My-SFTP 旨在解决 Windows 平台下原生 SFTP 体验不佳的问题（如缺乏自动补全、进度条简陋等），提供更好的交互体验。
+🚀 **一个基于 Go 实现的现代化 SFTP CLI 工具。**
+
+告别 Windows 原生 SFTP CLI 的糟糕体验，My-SFTP 提供了自动补全、可视化的传输进度条以及高性能的并发传输能力。
 
 ## ✨ 核心特性
 
 * **⚡ 交互体验升级**：支持 TAB 自动补全（命令、远程路径、本地路径）、命令历史记录。
 * **📂 文件传输**：
 
-  * **通配符支持**：支持 `*`, `?`, `[a-z]`, `**` (递归匹配) 等 Glob 模式。
-  * **递归传输**：使用 `-r` 轻松上传/下载整个目录。
+  * **多种文件传输**：
+    * 单文件传输
+    * 指定多文件传输
+    * Glob 模式
+    * 使用 `-r` 传输整个目录
   * **并发传输**：支持多文件并发上传/下载，充分利用带宽。
+  * **执行命令**: 通过 `! <cmd>` 或 `!! <cmd>` 直接在远端或者本地执行命令。
 
 ## 📦 安装说明
 
-如果你已安装 Go 环境 (1.23+)：
+如果你已安装 Go 环境 (1.24+)：
 
 ```bash
 go install my-sftp
