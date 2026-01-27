@@ -10,6 +10,7 @@ my-sftp-*
 *.so
 *.dylib
 
+
 # Test binary
 *.test
 
