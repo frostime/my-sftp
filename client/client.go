@@ -47,7 +47,13 @@ func NewClient(addr string, config *ssh.ClientConfig) (*Client, error) {
 		return nil, fmt.Errorf("ssh dial: %w", err)
 	}
 
-	sftpClient, err := sftp.NewClient(sshClient)
+	sftpClient, err := sftp.NewClient(sshClient,
+		// 部分服务器不支持; 就不启用了
+		// sftp.MaxPacket(128*1024),               // 128KB packet size
+		sftp.UseConcurrentWrites(true),         // 启用并发写入（上传优化）
+		sftp.UseConcurrentReads(true),          // 确保并发读取开启（下载优化）
+		sftp.MaxConcurrentRequestsPerFile(64), // 每个文件最大并发请求数
+	)
 	if err != nil {
 		sshClient.Close()
 		return nil, fmt.Errorf("sftp client: %w", err)
