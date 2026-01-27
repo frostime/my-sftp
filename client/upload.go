@@ -13,16 +13,34 @@ import (
 
 // Upload 上传文件
 func (c *Client) Upload(localPath, remotePath string) error {
-	return c.UploadWithProgress(localPath, remotePath, true)
+	localPath = c.ResolveLocalPath(localPath)
+
+	// 获取文件信息以创建进度条
+	stat, err := os.Stat(localPath)
+	if err != nil {
+		return err
+	}
+
+	// 创建单文件进度条（显示文件名）
+	bar := progressbar.NewOptions64(stat.Size(),
+		progressbar.OptionSetDescription(fmt.Sprintf("Uploading %s (1/1 files)", filepath.Base(localPath))),
+		progressbar.OptionShowBytes(true),
+		progressbar.OptionSetWidth(40),
+		progressbar.OptionSetPredictTime(true),
+	)
+	defer bar.Finish()
+	defer fmt.Println()
+
+	return c.UploadWithProgress(localPath, remotePath, bar)
 }
 
 // UploadWithProgress 上传文件（支持进度条）
-func (c *Client) UploadWithProgress(localPath, remotePath string, showProgress bool) error {
+func (c *Client) UploadWithProgress(localPath, remotePath string, globalBar *progressbar.ProgressBar) error {
 	localPath = c.ResolveLocalPath(localPath)
 	remotePath = c.ResolveRemotePath(remotePath)
 
-	// 获取本地文件信息
-	stat, err := os.Stat(localPath)
+	// 获取本地文件信息（确保文件存在）
+	_, err := os.Stat(localPath)
 	if err != nil {
 		return fmt.Errorf("stat local: %w", err)
 	}
@@ -49,17 +67,12 @@ func (c *Client) UploadWithProgress(localPath, remotePath string, showProgress b
 	defer c.putBuffer(buf)
 
 	// 使用缓冲和进度条
-	if showProgress {
-		bar := progressbar.DefaultBytes(
-			stat.Size(),
-			fmt.Sprintf("Uploading %s", filepath.Base(localPath)),
-		)
-		_, err = io.CopyBuffer(io.MultiWriter(dstFile, bar), srcFile, buf)
-		fmt.Println() // 换行
-	} else {
-		_, err = io.CopyBuffer(dstFile, srcFile, buf)
+	var writer io.Writer = dstFile
+	if globalBar != nil {
+		writer = io.MultiWriter(dstFile, globalBar)
 	}
 
+	_, err = io.CopyBuffer(writer, srcFile, buf)
 	return err
 }
 

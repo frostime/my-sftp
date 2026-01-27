@@ -440,43 +440,44 @@ collectRemoteDirsForUpload(tasks) = [
 
 ## Progress Display
 
-### Single File Progress
+my-sftp 提供了**统一且多维**的文件传输进度展示。无论单文件还是多文件任务，进度条均基于**字节数**，保持一致的视觉体验。
 
-**适用场景**：单文件传输或并发数为 1
+### Progress Visualization Principles
 
-```go
-bar := progressbar.DefaultBytes(
-    stat.Size(),
-    fmt.Sprintf("Uploading %s", filepath.Base(localPath)),
-)
-io.CopyBuffer(io.MultiWriter(dstFile, bar), srcFile, buf)
+1.  **字节级精度 (Byte-level Precision)**: 进度条基于总传输字节数，通过 `io.MultiWriter` 结合 `progressbar` 实现实时刷新，避免因传输大文件而导致的进度条"卡死"现象。
+2.  **统一体验 (Unified UX)**: 单文件和多文件传输采用相同的进度条格式、单位显示、速度估算和 ETA。
+3.  **多维反馈 (Multi-dimensional Feedback)**:
+    -   **字节进度**: 已传输数据量 / 总数据量。
+    -   **文件进度**: 进度条描述包含 `(n/N files)`，显示已完成文件数。
+    -   **当前任务**: 动态显示正在传输的文件名。
+    -   **完成清单**: 每个文件完成后，在控制台打印一条带 `✓` 标记的记录及文件大小。
+
+### Technical Implementation
+
+-   **核心类库**: `github.com/schollz/progressbar/v3`
+-   **单文件封装**: `Upload()` 和 `Download()` 内部创建 `progressbar`。
+-   **并发引擎**: `executeTasks()` 统一管理全局进度，预先遍历任务列表计算 `totalBytes`，并使用 `atomic.Int32` 安全地跟踪完成文件数。
+-   **实时描述更新**: 通过 `globalBar.Describe(fmt.Sprintf(...))` 动态修改进度条左侧的文本（包含文件名和计数）。
+
+### Display Examples
+
+#### 1. Single File Progress
+
+```
+Downloading file.txt (1/1 files)  50.2 MB / 100.4 MB [=====>      ] 50% 2.1 MB/s
 ```
 
-**显示效果**：
+#### 2. Multiple Files Global Progress (Concurrent)
+
 ```
-Uploading file.txt  50.2 MB / 100.4 MB [=====>      ] 50% 2.1 MB/s
-```
-
-### Global Progress (Multiple Files)
-
-**适用场景**：并发传输多个文件（concurrency > 1）
-
-```go
-globalBar := progressbar.NewOptions(len(tasks),
-    progressbar.OptionSetDescription("Transferring files"),
-    progressbar.OptionShowCount(),
-    progressbar.OptionShowBytes(true),
-    progressbar.OptionSetWidth(40),
-    progressbar.OptionClearOnFinish(),
-)
+✓ file1.txt (1.2 MB)
+✓ file2.txt (3.5 MB)
+Transferring file3.txt (2/10 files)  526.2 MB / 2.5 GB [===>         ] 21% 15.2 MB/s ETA 2m15s
 ```
 
-**显示效果**：
-```
-Transferring files 15/42 [=========>          ] 36% 1.2 MB/s
-```
-
-**更新时机**：每完成一个文件，调用 `globalBar.Add(1)`
+**更新特性**:
+-   **完成清单**: 在进度条上方通过 `\r\033[K` 清除当前行并打印 `✓` 记录，随后进度条在下一行重新渲染。
+-   **动态文件名**: 进度条左侧描述实时显示当前并发池中最新开始或刚完成的文件。
 
 ## Concurrency Control
 

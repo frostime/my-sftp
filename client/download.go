@@ -14,16 +14,34 @@ import (
 
 // Download 下载文件
 func (c *Client) Download(remotePath, localPath string) error {
-	return c.DownloadWithProgress(remotePath, localPath, true)
+	remotePath = c.ResolveRemotePath(remotePath)
+
+	// 获取文件信息以创建进度条
+	stat, err := c.sftpClient.Stat(remotePath)
+	if err != nil {
+		return err
+	}
+
+	// 创建单文件进度条（显示文件名）
+	bar := progressbar.NewOptions64(stat.Size(),
+		progressbar.OptionSetDescription(fmt.Sprintf("Downloading %s (1/1 files)", path.Base(remotePath))),
+		progressbar.OptionShowBytes(true),
+		progressbar.OptionSetWidth(40),
+		progressbar.OptionSetPredictTime(true),
+	)
+	defer bar.Finish()
+	defer fmt.Println()
+
+	return c.DownloadWithProgress(remotePath, localPath, bar)
 }
 
 // DownloadWithProgress 下载文件（支持进度条）
-func (c *Client) DownloadWithProgress(remotePath, localPath string, showProgress bool) error {
+func (c *Client) DownloadWithProgress(remotePath, localPath string, globalBar *progressbar.ProgressBar) error {
 	remotePath = c.ResolveRemotePath(remotePath)
 	localPath = c.ResolveLocalPath(localPath)
 
-	// 获取远程文件信息
-	stat, err := c.sftpClient.Stat(remotePath)
+	// 获取远程文件信息（确保文件存在）
+	_, err := c.sftpClient.Stat(remotePath)
 	if err != nil {
 		return fmt.Errorf("stat remote: %w", err)
 	}
@@ -50,17 +68,12 @@ func (c *Client) DownloadWithProgress(remotePath, localPath string, showProgress
 	defer c.putBuffer(buf)
 
 	// 使用缓冲和进度条
-	if showProgress {
-		bar := progressbar.DefaultBytes(
-			stat.Size(),
-			fmt.Sprintf("Downloading %s", filepath.Base(remotePath)),
-		)
-		_, err = io.CopyBuffer(io.MultiWriter(dstFile, bar), srcFile, buf)
-		fmt.Println() // 换行
-	} else {
-		_, err = io.CopyBuffer(dstFile, srcFile, buf)
+	var writer io.Writer = dstFile
+	if globalBar != nil {
+		writer = io.MultiWriter(dstFile, globalBar)
 	}
 
+	_, err = io.CopyBuffer(writer, srcFile, buf)
 	return err
 }
 

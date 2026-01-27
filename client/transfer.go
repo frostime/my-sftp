@@ -15,6 +15,20 @@ import (
 	"github.com/schollz/progressbar/v3"
 )
 
+// formatBytes 将字节数格式化为人类可读的形式
+func formatBytes(bytes int64) string {
+	const unit = 1024
+	if bytes < unit {
+		return fmt.Sprintf("%d B", bytes)
+	}
+	div, exp := int64(unit), 0
+	for n := bytes / unit; n >= unit; n /= unit {
+		div *= unit
+		exp++
+	}
+	return fmt.Sprintf("%.1f %cB", float64(bytes)/float64(div), "KMGTPE"[exp])
+}
+
 // transferTask 表示单个传输任务
 type transferTask struct {
 	localPath  string // 本地文件路径
@@ -63,23 +77,26 @@ func (c *Client) executeTasks(tasks []transferTask, opts *TransferOptions) (int,
 	var errs []error
 	var successCount int32 = 0
 
-	// 整体进度条（仅在并发>1且需要显示进度时使用）
-	var globalBar *progressbar.ProgressBar
-	showGlobalProgress := opts.ShowProgress && concurrency > 1
-	showFileProgress := opts.ShowProgress && concurrency == 1
+	// 计算总字节数和文件数
+	totalBytes := int64(0)
+	for _, task := range tasks {
+		totalBytes += task.size
+	}
+	totalFiles := len(tasks)
 
-	if showGlobalProgress {
-		globalBar = progressbar.NewOptions(len(tasks),
-			progressbar.OptionSetDescription("Transferring files"),
-			progressbar.OptionShowCount(),
+	// 整体进度条（字节级 + 文件计数）
+	var globalBar *progressbar.ProgressBar
+	var completedFiles *atomic.Int32
+
+	if opts.ShowProgress {
+		globalBar = progressbar.NewOptions64(totalBytes,
+			progressbar.OptionSetDescription(fmt.Sprintf("Transferring (0/%d files)", totalFiles)),
 			progressbar.OptionShowBytes(true),
 			progressbar.OptionSetWidth(40),
-			progressbar.OptionClearOnFinish(),
-			progressbar.OptionSetElapsedTime(true),
 			progressbar.OptionSetPredictTime(true),
-			progressbar.OptionShowBytes(true),
-			progressbar.OptionShowTotalBytes(true),
+			progressbar.OptionClearOnFinish(),
 		)
+		completedFiles = &atomic.Int32{}
 	}
 
 	for _, task := range tasks {
@@ -100,11 +117,21 @@ func (c *Client) executeTasks(tasks []transferTask, opts *TransferOptions) (int,
 				}
 			}()
 
+			// 显示当前正在传输的文件（多文件模式）
+			if globalBar != nil {
+				fileName := filepath.Base(t.localPath)
+				if !t.isUpload {
+					fileName = path.Base(t.remotePath)
+				}
+				count := completedFiles.Load()
+				globalBar.Describe(fmt.Sprintf("Transferring %s (%d/%d files)", fileName, count, totalFiles))
+			}
+
 			var err error
 			if t.isUpload {
-				err = c.UploadWithProgress(t.localPath, t.remotePath, showFileProgress)
+				err = c.UploadWithProgress(t.localPath, t.remotePath, globalBar)
 			} else {
-				err = c.DownloadWithProgress(t.remotePath, t.localPath, showFileProgress)
+				err = c.DownloadWithProgress(t.remotePath, t.localPath, globalBar)
 			}
 
 			if err != nil {
@@ -117,18 +144,24 @@ func (c *Client) executeTasks(tasks []transferTask, opts *TransferOptions) (int,
 				mu.Unlock()
 			} else {
 				atomic.AddInt32(&successCount, 1)
-			}
-
-			// 更新整体进度条
-			if showGlobalProgress && globalBar != nil {
-				globalBar.Add(1)
+				// 文件完成后打印确认信息并更新计数
+				if globalBar != nil && completedFiles != nil {
+					count := completedFiles.Add(1)
+					fileName := filepath.Base(t.localPath)
+					if !t.isUpload {
+						fileName = path.Base(t.remotePath)
+					}
+					// 打印完成信息
+					fmt.Printf("\r\033[K✓ %s (%s)\n", fileName, formatBytes(t.size))
+					globalBar.Describe(fmt.Sprintf("Transferring (%d/%d files)", count, totalFiles))
+				}
 			}
 		}(task)
 	}
 
 	wg.Wait()
 
-	if showGlobalProgress && globalBar != nil {
+	if globalBar != nil {
 		globalBar.Finish()
 		fmt.Println() // 换行
 	}
