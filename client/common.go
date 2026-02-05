@@ -241,26 +241,32 @@ func (c *Client) ResolveRemotePath(p string) string {
 }
 
 // ResolveLocalPath 解析本地路径（相对路径转绝对路径）
+// 返回路径统一使用 / 分隔符（SFTP 兼容格式），避免 Windows \ 不被远程服务器识别
 func (c *Client) ResolveLocalPath(p string) string {
+	var result string
 	if p == "" {
-		return c.localWorkDir
-	}
-	// 处理 ~ 前缀（用户主目录）
-	if p == "~" {
+		result = c.localWorkDir
+	} else if p == "~" {
+		// 处理 ~ 前缀（用户主目录）
 		if home, err := os.UserHomeDir(); err == nil {
-			return home
+			result = home
+		} else {
+			result = c.localWorkDir
 		}
-		return c.localWorkDir
-	}
-	if strings.HasPrefix(p, "~/") {
+	} else if strings.HasPrefix(p, "~/") || strings.HasPrefix(p, "~\\") {
+		// 支持 ~/ 和 ~\ 两种格式
 		if home, err := os.UserHomeDir(); err == nil {
-			return filepath.Clean(filepath.Join(home, p[2:]))
+			result = filepath.Clean(filepath.Join(home, p[2:]))
+		} else {
+			result = c.localWorkDir
 		}
+	} else if filepath.IsAbs(p) {
+		result = filepath.Clean(p)
+	} else {
+		result = filepath.Clean(filepath.Join(c.localWorkDir, p))
 	}
-	if filepath.IsAbs(p) {
-		return filepath.Clean(p)
-	}
-	return filepath.Clean(filepath.Join(c.localWorkDir, p))
+	// 统一转换为 / 路径分隔符（SFTP 兼容，Windows \ 会被 SFTP 服务端误解）
+	return filepath.ToSlash(result)
 }
 
 // ClearDirCache 清除所有目录缓存

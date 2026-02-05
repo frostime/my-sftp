@@ -187,7 +187,8 @@ func (c *Completer) completeLocalPath(prefix string) [][]rune {
 		if strings.HasPrefix(strings.ToLower(name), strings.ToLower(partial)) {
 			// 只保存匹配的文件/目录名
 			if entry.IsDir() {
-				name += string(os.PathSeparator)
+				// 统一使用 / 作为路径分隔符（SFTP 兼容，避免 Windows \ 不被识别）
+				name += "/"
 			}
 			candidates = append(candidates, name)
 		}
