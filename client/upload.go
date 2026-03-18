@@ -6,6 +6,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"strings"
 
 	"github.com/bmatcuk/doublestar/v4"
 	"github.com/schollz/progressbar/v3"
@@ -81,6 +82,7 @@ type UploadOptions struct {
 	Recursive    bool // 递归上传目录
 	ShowProgress bool // 显示进度条
 	Concurrency  int  // 并发数
+	Flatten      bool // 扁平化目标路径
 	MaxDepth     int  // 最大递归深度：-1=无限, 0=仅当前目录, 1=一层子目录...
 }
 
@@ -106,6 +108,7 @@ func (c *Client) UploadGlob(pattern, remotePath string, opts *UploadOptions) (in
 	if err != nil {
 		return 0, fmt.Errorf("glob pattern: %w", err)
 	}
+	globBase := localGlobBase(fullPattern)
 
 	if len(matches) == 0 {
 		return 0, fmt.Errorf("no files match pattern: %s", pattern)
@@ -126,7 +129,15 @@ func (c *Client) UploadGlob(pattern, remotePath string, opts *UploadOptions) (in
 				continue // 非递归模式跳过目录
 			}
 			// 递归收集目录内的文件
-			remoteSubDir := path.Join(remotePath, filepath.Base(match))
+			remoteSubDir := remotePath
+			if !opts.Flatten {
+				rel, relErr := filepath.Rel(globBase, match)
+				if relErr == nil && rel != "." {
+					remoteSubDir = path.Join(remotePath, filepath.ToSlash(rel))
+				} else {
+					remoteSubDir = path.Join(remotePath, filepath.Base(match))
+				}
+			}
 			subTasks, err := c.collectUploadTasks(match, remoteSubDir, opts.MaxDepth, 0)
 			if err != nil {
 				return 0, fmt.Errorf("collect tasks for %s: %w", match, err)
@@ -134,6 +145,12 @@ func (c *Client) UploadGlob(pattern, remotePath string, opts *UploadOptions) (in
 			tasks = append(tasks, subTasks...)
 		} else {
 			remoteFile := path.Join(remotePath, filepath.Base(match))
+			if !opts.Flatten {
+				rel, relErr := filepath.Rel(globBase, match)
+				if relErr == nil {
+					remoteFile = path.Join(remotePath, filepath.ToSlash(rel))
+				}
+			}
 			tasks = append(tasks, transferTask{
 				localPath:  match,
 				remotePath: remoteFile,
@@ -145,6 +162,11 @@ func (c *Client) UploadGlob(pattern, remotePath string, opts *UploadOptions) (in
 
 	if len(tasks) == 0 {
 		return 0, fmt.Errorf("no files to upload")
+	}
+	if opts.Flatten {
+		if err := validateFlattenUploadCollisions(tasks); err != nil {
+			return 0, err
+		}
 	}
 
 	fmt.Printf("Found %d file(s) to upload\n", len(tasks))
@@ -192,6 +214,14 @@ func (c *Client) UploadDir(localDir, remoteDir string, opts *UploadOptions) (int
 	tasks, err := c.collectUploadTasks(localDir, remoteDir, opts.MaxDepth, 0)
 	if err != nil {
 		return 0, fmt.Errorf("collect upload tasks: %w", err)
+	}
+	if opts.Flatten {
+		if err := validateFlattenUploadCollisions(tasks); err != nil {
+			return 0, err
+		}
+		for i := range tasks {
+			tasks[i].remotePath = path.Join(remoteDir, filepath.Base(tasks[i].localPath))
+		}
 	}
 
 	if len(tasks) == 0 {
@@ -264,4 +294,36 @@ func (c *Client) ensureRemoteDir(dir string) error {
 	})
 
 	return err
+}
+
+func localGlobBase(pattern string) string {
+	cleaned := filepath.Clean(pattern)
+	parts := strings.Split(cleaned, string(filepath.Separator))
+	base := make([]string, 0, len(parts))
+	for i, part := range parts {
+		if i == 0 && strings.Contains(part, ":") {
+			base = append(base, part)
+			continue
+		}
+		if strings.ContainsAny(part, "*?[]") {
+			break
+		}
+		base = append(base, part)
+	}
+	if len(base) == 0 {
+		return filepath.Dir(cleaned)
+	}
+	return filepath.Clean(filepath.Join(base...))
+}
+
+func validateFlattenUploadCollisions(tasks []transferTask) error {
+	seen := make(map[string]struct{})
+	for _, task := range tasks {
+		base := filepath.Base(task.localPath)
+		if _, exists := seen[base]; exists {
+			return fmt.Errorf("duplicate basename in --flatten mode: %s", base)
+		}
+		seen[base] = struct{}{}
+	}
+	return nil
 }

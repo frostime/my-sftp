@@ -1,3 +1,4 @@
-changes/**
-requests/**
-skills/**
+requests/archive
+changes/archive
+asks/archive
+tmp/*

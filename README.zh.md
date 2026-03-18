@@ -73,24 +73,27 @@ my-sftp user@host:2222
 
 #### ⬇️⬆️ 文件传输
 
-> 支持参数：`-r` (递归目录)
+> 支持参数：`-r` (递归)、`-d/--dir` (目标目录)、`--name` (单文件重命名)、`--flatten` (扁平化输出结构)
 
 | 命令    | 说明      | 示例                                               |
 | :---- | :------ | :----------------------------------------------- |
-| `get` | 下载文件/目录 | `get file.txt`<br>`get -r /var/log/nginx ./logs` |
-| `put` | 上传文件/目录 | `put local.txt`<br>`put -r dist/ /var/www/html`  |
+| `get` | 下载文件/目录 | `get file.txt`<br>`get -r /var/log/nginx -d ./logs` |
+| `put` | 上传文件/目录 | `put local.txt`<br>`put -r dist -d /var/www/html`  |
 
 **🔥 Glob**
 
 ```bash
-# 上传所有 txt 文件
-> put *.txt
+# 上传所有 txt 文件到远程目录
+> put *.txt -d /data/txt
 
-# 递归上传所有 Go 源代码文件
-> put **/*.go src/
+# 递归上传所有 Go 源代码文件（默认保留目录结构）
+> put **/*.go -d /srv/src
+
+# 扁平化输出结构（若文件名冲突会报错）
+> put **/*.go -d /srv/src --flatten
 
 # 下载特定模式的文件
-> get access-*.log
+> get access-*.log -d ./logs
 ```
 
 #### 🛠 文件操作

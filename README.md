@@ -73,24 +73,27 @@ After entering the shell, you can use the following commands. **Tip: All paths s
 
 #### ⬇️⬆️ File Transfer
 
-> Supported parameters: `-r` (recursive directory)
+> Supported parameters: `-r` (recursive), `-d/--dir` (destination directory), `--name` (single-file rename), `--flatten` (flatten output structure)
 
 | Command | Description           | Example                                               |
 | :------ | :-------------------- | :---------------------------------------------------- |
-| `get`   | Download files/directories | `get file.txt`<br>`get -r /var/log/nginx ./logs` |
-| `put`   | Upload files/directories   | `put local.txt`<br>`put -r dist/ /var/www/html`  |
+| `get`   | Download files/directories | `get file.txt`<br>`get -r /var/log/nginx -d ./logs` |
+| `put`   | Upload files/directories   | `put local.txt`<br>`put -r dist -d /var/www/html`  |
 
 **🔥 Glob**
 
 ```bash
-# Upload all txt files
-> put *.txt
+# Upload all txt files to a remote directory
+> put *.txt -d /data/txt
 
-# Recursively upload all Go source files
-> put **/*.go src/
+# Recursively upload all Go source files (preserve structure by default)
+> put **/*.go -d /srv/src
+
+# Flatten output structure (fails on duplicate basenames)
+> put **/*.go -d /srv/src --flatten
 
 # Download specific pattern files
-> get access-*.log
+> get access-*.log -d ./logs
 ```
 
 #### 🛠 File Operations
