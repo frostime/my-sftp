@@ -639,7 +639,8 @@ executeTasks([]) → return (0, nil)
 
 **处理**：
 - Glob 去重在收集阶段完成
-- 第二次上传会覆盖第一次
+- planner 会在执行前检测最终目标路径冲突
+- 如果两个 source 会落到同一个最终目标路径，命令直接报错，不会进入覆盖执行
 
 ### Case 3: Symbolic Links
 

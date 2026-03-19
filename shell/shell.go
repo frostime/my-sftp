@@ -5,6 +5,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -15,6 +16,16 @@ import (
 	"github.com/frostime/my-sftp/client"
 	"github.com/frostime/my-sftp/completer"
 )
+
+const legacyPositionalTargetCompatibility = true
+
+type transferCLIOptions struct {
+	recursive bool
+	flatten   bool
+	targetDir string
+	rename    string
+	sources   []string
+}
 
 // Shell 交互式 Shell
 type Shell struct {
@@ -253,21 +264,31 @@ Available commands:
     lmkdir <dir>          Create local directory
 
   File Transfer:
-    get [-r] <remote|pattern> [local]  Download file(s) or directory from server
-    put [-r] <local|pattern> [remote]  Upload file(s) or directory to server
+	get [-r] [--flatten] [-d dir] [--name name] [--] <remote|pattern>...  Download file(s) or directory from server
+	put [-r] [--flatten] [-d dir] [--name name] [--] <local|pattern>...   Upload file(s) or directory to server
 
     Options:
-      -r                   Recursive mode for directories
+	  -r                   Recursive mode for directories
+	  -d, --dir            Destination directory (local for get, remote for put)
+	  --name               Rename a single-file destination (filename only)
+	  --flatten            Flatten multi-source structure into target root
+	  --                   End option parsing for source names beginning with -
 
     Examples:
-      get file.txt                   Download single file
-      get *.log logs/                Download all .log files
-      get **/*.go code/              Download all .go files recursively
-      get -r remotedir localdir/     Download entire directory
-      put file.txt                   Upload single file
-      put *.log logs/                Upload all .log files
-      put **/*.go code/              Upload all .go files recursively
-      put -r mydir remotedir/        Upload entire directory
+	  get file.txt                           Download single file to current local dir
+	  get file.txt -d downloads --name x.txt Download single file with rename
+	  get a/x.txt b/y.txt -d out             Preserve explicit source paths under out/
+	  get **/*.go -d code                    Download recursively and preserve structure
+	  get **/*.go -d code --flatten          Download recursively and flatten output
+	  get -d out -- -report.txt              Download a source whose name begins with -
+	  get -r remotedir -d localdir           Download entire directory recursively
+	  put file.txt                           Upload single file to current remote dir
+	  put file.txt -d /data/inbox --name x.txt Upload single file with rename
+	  put src/a.txt src/b.txt -d /srv/out    Preserve explicit source paths under /srv/out/
+	  put **/*.go -d /srv/code               Upload recursively and preserve structure
+	  put **/*.go -d /srv/code --flatten     Upload recursively and flatten output
+	  put -d /srv/out -- -report.txt         Upload a source whose name begins with -
+	  put -r mydir -d /srv/remotedir         Upload entire directory recursively
 
   Remote File Operations:
     rm <path>             Remove file or directory
@@ -351,96 +372,175 @@ func (s *Shell) cmdLs(args []string) error {
 	return nil
 }
 
+func parseTransferCLIArgs(args []string) (*transferCLIOptions, error) {
+	opts := &transferCLIOptions{}
+	stopOptions := false
+
+	for i := 0; i < len(args); i++ {
+		tok := args[i]
+		if stopOptions {
+			opts.sources = append(opts.sources, tok)
+			continue
+		}
+
+		switch tok {
+		case "--":
+			stopOptions = true
+		case "-r":
+			opts.recursive = true
+		case "--flatten":
+			opts.flatten = true
+		case "-d", "--dir":
+			i++
+			if i >= len(args) {
+				return nil, fmt.Errorf("missing value for %s", tok)
+			}
+			opts.targetDir = args[i]
+		case "--name":
+			i++
+			if i >= len(args) {
+				return nil, fmt.Errorf("missing value for --name")
+			}
+			opts.rename = args[i]
+		default:
+			if strings.HasPrefix(tok, "-") {
+				return nil, fmt.Errorf("unknown option: %s", tok)
+			}
+			opts.sources = append(opts.sources, tok)
+		}
+	}
+
+	if len(opts.sources) == 0 {
+		return nil, fmt.Errorf("missing source path")
+	}
+
+	return opts, nil
+}
+
+func validateTransferRename(name string) error {
+	if name == "" {
+		return nil
+	}
+	if name == "." || name == ".." {
+		return fmt.Errorf("--name must be a filename")
+	}
+	if strings.ContainsAny(name, `/\\`) {
+		return fmt.Errorf("--name must be a filename without path separators")
+	}
+	return nil
+}
+
+func buildDownloadCommandOptions(parsed *transferCLIOptions) *client.DownloadOptions {
+	return &client.DownloadOptions{
+		Recursive:    parsed.recursive,
+		ShowProgress: true,
+		Concurrency:  client.MaxConcurrentTransfers,
+		Flatten:      parsed.flatten,
+		MaxDepth:     -1,
+	}
+}
+
+func buildUploadCommandOptions(parsed *transferCLIOptions) *client.UploadOptions {
+	return &client.UploadOptions{
+		Recursive:    parsed.recursive,
+		ShowProgress: true,
+		Concurrency:  client.MaxConcurrentTransfers,
+		Flatten:      parsed.flatten,
+		MaxDepth:     -1,
+	}
+}
+
+func (s *Shell) inferLegacyGetTarget(remotePaths []string) ([]string, string, bool) {
+	if len(remotePaths) <= 1 {
+		return remotePaths, "", false
+	}
+
+	lastArg := remotePaths[len(remotePaths)-1]
+	resolvedLast := s.client.ResolveLocalPath(lastArg)
+	if stat, err := os.Stat(resolvedLast); err == nil && stat.IsDir() {
+		return remotePaths[:len(remotePaths)-1], lastArg, true
+	}
+
+	return remotePaths, "", false
+}
+
+func (s *Shell) inferLegacyPutTarget(localPaths []string) ([]string, string, bool) {
+	if len(localPaths) <= 1 {
+		return localPaths, "", false
+	}
+
+	lastArg := localPaths[len(localPaths)-1]
+	resolvedLast := s.client.ResolveLocalPath(lastArg)
+	if _, err := os.Stat(resolvedLast); os.IsNotExist(err) {
+		return localPaths[:len(localPaths)-1], lastArg, true
+	}
+
+	return localPaths, "", false
+}
+
 // cmdGet 下载文件
 func (s *Shell) cmdGet(args []string) error {
 	if len(args) < 1 {
-		return fmt.Errorf("usage: get [-r] <remote_file|pattern>... [local_path]")
+		return fmt.Errorf("usage: get [-r] [--flatten] [-d <local_dir>] [--name <filename>] [--] <remote_src>...")
 	}
 
-	// 解析参数
-	recursive := false
-	startIdx := 0
-	if args[0] == "-r" {
-		recursive = true
-		startIdx = 1
-		if len(args) < 2 {
-			return fmt.Errorf("usage: get -r <remote_path|pattern>... [local_path]")
-		}
+	opts, err := parseTransferCLIArgs(args)
+	if err != nil {
+		return fmt.Errorf("get: %w", err)
+	}
+	if err := validateTransferRename(opts.rename); err != nil {
+		return fmt.Errorf("get: %w", err)
 	}
 
-	// 收集所有远程路径参数
-	remotePaths := args[startIdx:]
-	localPath := "."
-
-	// 如果最后一个参数是本地目录，则作为目标路径
-	// 判断逻辑：如果有多个参数，且最后一个参数在本地存在且是目录，则视为本地目标路径
-	if len(remotePaths) > 1 {
-		lastArg := remotePaths[len(remotePaths)-1]
-		resolvedLast := s.client.ResolveLocalPath(lastArg)
-		if stat, err := os.Stat(resolvedLast); err == nil && stat.IsDir() {
-			// 最后一个参数是本地目录，视为目标路径
-			localPath = lastArg
-			remotePaths = remotePaths[:len(remotePaths)-1]
+	remotePaths := opts.sources
+	localDir := opts.targetDir
+	if localDir == "" && len(remotePaths) > 1 {
+		if legacyPositionalTargetCompatibility {
+			var usedLegacy bool
+			remotePaths, localDir, usedLegacy = s.inferLegacyGetTarget(remotePaths)
+			if usedLegacy {
+				fmt.Println("Warning: legacy positional target syntax is deprecated; use -d <local_dir>")
+			}
 		}
-	} else if len(remotePaths) == 1 && !strings.ContainsAny(remotePaths[0], "*?[]") {
-		// 单文件非 glob 模式，使用远程文件名作为本地文件名
-		localPath = filepath.Base(remotePaths[0])
+		if localDir == "" {
+			return fmt.Errorf("multiple get sources require destination: use -d <local_dir>")
+		}
+	}
+	if localDir == "" {
+		localDir = "."
+	}
+
+	if opts.rename != "" && len(remotePaths) != 1 {
+		return fmt.Errorf("--name is only valid with exactly one source file")
 	}
 
 	// 开始计时
 	startTime := time.Now()
 	totalCount := 0
 
-	for _, remotePath := range remotePaths {
-		// 检查是否包含 glob 模式
-		hasGlob := strings.ContainsAny(remotePath, "*?[]")
-
-		if hasGlob {
-			// Glob 模式匹配下载
-			count, err := s.client.DownloadGlob(remotePath, localPath, &client.DownloadOptions{
-				Recursive:    recursive,
-				ShowProgress: true,
-				Concurrency:  client.MaxConcurrentTransfers,
-			})
-			if err != nil {
-				return err
-			}
-			totalCount += count
-			continue
+	if opts.rename != "" {
+		remotePath := remotePaths[0]
+		if strings.ContainsAny(remotePath, "*?[]") {
+			return fmt.Errorf("--name cannot be used with glob source: %s", remotePath)
 		}
-
-		// 检查是否是目录
 		stat, err := s.client.Stat(remotePath)
 		if err != nil {
 			return err
 		}
-
 		if stat.IsDir() {
-			if !recursive {
-				return fmt.Errorf("%s is a directory, use 'get -r' for recursive download", remotePath)
-			}
-			// 递归下载目录
-			count, err := s.client.DownloadDir(remotePath, localPath, &client.DownloadOptions{
-				Recursive:    true,
-				ShowProgress: true,
-			})
-			if err != nil {
-				return err
-			}
-			totalCount += count
-		} else {
-			// 下载单个文件
-			// 多文件下载时，localPath 是目录；单文件下载时，localPath 是文件名
-			targetPath := localPath
-			if len(remotePaths) > 1 {
-				// 多文件下载，localPath 应该是目录
-				targetPath = filepath.Join(localPath, filepath.Base(remotePath))
-			}
-			if err := s.client.Download(remotePath, targetPath); err != nil {
-				return err
-			}
-			totalCount++
+			return fmt.Errorf("--name cannot be used with directory source: %s", remotePath)
 		}
+		targetPath := filepath.Join(localDir, opts.rename)
+		if err := s.client.Download(remotePath, targetPath); err != nil {
+			return err
+		}
+		totalCount = 1
+	} else {
+		count, err := s.client.DownloadSources(remotePaths, localDir, buildDownloadCommandOptions(opts))
+		if err != nil {
+			return err
+		}
+		totalCount = count
 	}
 
 	duration := time.Since(startTime)
@@ -451,87 +551,67 @@ func (s *Shell) cmdGet(args []string) error {
 // cmdPut 上传文件
 func (s *Shell) cmdPut(args []string) error {
 	if len(args) < 1 {
-		return fmt.Errorf("usage: put [-r] <local_file|pattern>... [remote_path]")
+		return fmt.Errorf("usage: put [-r] [--flatten] [-d <remote_dir>] [--name <filename>] [--] <local_src>...")
 	}
 
-	// 解析参数
-	recursive := false
-	startIdx := 0
-	if args[0] == "-r" {
-		recursive = true
-		startIdx = 1
-		if len(args) < 2 {
-			return fmt.Errorf("usage: put -r <local_path>... [remote_path]")
-		}
+	opts, err := parseTransferCLIArgs(args)
+	if err != nil {
+		return fmt.Errorf("put: %w", err)
+	}
+	if err := validateTransferRename(opts.rename); err != nil {
+		return fmt.Errorf("put: %w", err)
 	}
 
-	// 收集所有本地路径参数
-	localPaths := args[startIdx:]
-	remotePath := "."
-
-	// 如果最后一个参数是远程目录，则作为目标路径
-	// 判断逻辑：如果有多个参数，且最后一个参数在本地不存在，则视为远程目标路径
-	if len(localPaths) > 1 {
-		lastArg := localPaths[len(localPaths)-1]
-		resolvedLast := s.client.ResolveLocalPath(lastArg)
-		if _, err := os.Stat(resolvedLast); os.IsNotExist(err) {
-			// 最后一个参数本地不存在，视为远程目标路径
-			remotePath = lastArg
-			localPaths = localPaths[:len(localPaths)-1]
+	localPaths := opts.sources
+	remoteDir := opts.targetDir
+	if remoteDir == "" && len(localPaths) > 1 {
+		if legacyPositionalTargetCompatibility {
+			var usedLegacy bool
+			localPaths, remoteDir, usedLegacy = s.inferLegacyPutTarget(localPaths)
+			if usedLegacy {
+				fmt.Println("Warning: legacy positional target syntax is deprecated; use -d <remote_dir>")
+			}
 		}
+		if remoteDir == "" {
+			return fmt.Errorf("multiple put sources require destination: use -d <remote_dir>")
+		}
+	}
+	if remoteDir == "" {
+		remoteDir = "."
+	}
+
+	if opts.rename != "" && len(localPaths) != 1 {
+		return fmt.Errorf("--name is only valid with exactly one source file")
 	}
 
 	// 开始计时
 	startTime := time.Now()
 	totalCount := 0
 
-	for _, localPath := range localPaths {
-		// 检查是否包含 glob 模式
-		hasGlob := strings.ContainsAny(localPath, "*?[]")
-
-		if hasGlob {
-			// Glob 模式匹配上传
-			count, err := s.client.UploadGlob(localPath, remotePath, &client.UploadOptions{
-				Recursive:    recursive,
-				ShowProgress: true,
-				Concurrency:  client.MaxConcurrentTransfers,
-			})
-			if err != nil {
-				return err
-			}
-			totalCount += count
-			continue
+	if opts.rename != "" {
+		localPath := localPaths[0]
+		if strings.ContainsAny(localPath, "*?[]") {
+			return fmt.Errorf("--name cannot be used with glob source: %s", localPath)
 		}
-
-		// 解析本地路径（基于 localWorkDir）
 		resolvedPath := s.client.ResolveLocalPath(localPath)
-
-		// 检查本地文件/目录
 		stat, err := os.Stat(resolvedPath)
 		if err != nil {
 			return err
 		}
-
 		if stat.IsDir() {
-			if !recursive {
-				return fmt.Errorf("%s is a directory, use 'put -r' for recursive upload", localPath)
-			}
-			// 递归上传目录
-			count, err := s.client.UploadDir(localPath, remotePath, &client.UploadOptions{
-				Recursive:    true,
-				ShowProgress: true,
-			})
-			if err != nil {
-				return err
-			}
-			totalCount += count
-		} else {
-			// 上传单个文件
-			if err := s.client.Upload(localPath, remotePath); err != nil {
-				return err
-			}
-			totalCount++
+			return fmt.Errorf("--name cannot be used with directory source: %s", localPath)
 		}
+		targetPath := path.Join(remoteDir, opts.rename)
+		if err := s.client.Upload(localPath, targetPath); err != nil {
+			return err
+		}
+		totalCount = 1
+	} else {
+		count, err := s.client.UploadSources(localPaths, remoteDir, buildUploadCommandOptions(opts))
+		if err != nil {
+			return err
+		}
+		totalCount = count
 	}
 
 	duration := time.Since(startTime)
