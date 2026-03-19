@@ -56,6 +56,9 @@ func (c *Client) DownloadWithProgress(remotePath, localPath string, globalBar *p
 	if localStat, err := os.Stat(localPath); err == nil && localStat.IsDir() {
 		localPath = filepath.Join(localPath, path.Base(remotePath))
 	}
+	if err := os.MkdirAll(filepath.Dir(localPath), 0755); err != nil {
+		return fmt.Errorf("create local dir: %w", err)
+	}
 
 	dstFile, err := os.Create(localPath)
 	if err != nil {
@@ -89,6 +92,23 @@ type DownloadOptions struct {
 // DownloadDir 递归下载整个目录
 // 使用统一的任务收集+执行模式，避免并发嵌套
 func (c *Client) DownloadDir(remoteDir, localDir string, opts *DownloadOptions) (int, error) {
+	resolvedDir := c.ResolveRemotePath(remoteDir)
+	stat, err := c.sftpClient.Stat(resolvedDir)
+	if err != nil {
+		return 0, fmt.Errorf("stat remote dir: %w", err)
+	}
+	if !stat.IsDir() {
+		return 0, fmt.Errorf("not a directory: %s", resolvedDir)
+	}
+	return c.DownloadSources([]string{remoteDir}, localDir, opts)
+}
+
+// DownloadSources 下载一个或多个远程 source（显式路径或 glob）
+func (c *Client) DownloadSources(remoteSources []string, localDir string, opts *DownloadOptions) (int, error) {
+	if len(remoteSources) == 0 {
+		return 0, fmt.Errorf("missing source path")
+	}
+
 	if opts == nil {
 		opts = &DownloadOptions{
 			ShowProgress: true,
@@ -97,42 +117,40 @@ func (c *Client) DownloadDir(remoteDir, localDir string, opts *DownloadOptions) 
 		}
 	}
 
-	remoteDir = c.ResolveRemotePath(remoteDir)
 	localDir = c.ResolveLocalPath(localDir)
-
-	// 检查远程目录
-	stat, err := c.sftpClient.Stat(remoteDir)
-	if err != nil {
-		return 0, fmt.Errorf("stat remote dir: %w", err)
-	}
-	if !stat.IsDir() {
-		return 0, fmt.Errorf("not a directory: %s", remoteDir)
-	}
 
 	// 确保本地目录存在
 	if err := os.MkdirAll(localDir, 0755); err != nil {
 		return 0, fmt.Errorf("create local dir: %w", err)
 	}
 
-	// 收集所有下载任务（不执行）
-	tasks, err := c.collectDownloadTasks(remoteDir, localDir, opts.MaxDepth, 0)
-	if err != nil {
-		return 0, fmt.Errorf("collect download tasks: %w", err)
-	}
-	if opts.Flatten {
-		if err := validateFlattenDownloadCollisions(tasks); err != nil {
+	var tasks []transferTask
+	for _, source := range remoteSources {
+		sourceTasks, err := c.collectDownloadSourceTasks(source, localDir, opts, len(remoteSources))
+		if err != nil {
 			return 0, err
 		}
-		for i := range tasks {
-			tasks[i].localPath = filepath.Join(localDir, filepath.Base(tasks[i].localPath))
-		}
+		tasks = append(tasks, sourceTasks...)
 	}
 
 	if len(tasks) == 0 {
 		return 0, nil
 	}
 
-	fmt.Printf("Downloading directory with %d file(s)\n", len(tasks))
+	if opts.Flatten {
+		if err := applyFlattenMapping(tasks, localDir); err != nil {
+			return 0, err
+		}
+	}
+	if err := validateTargetCollisions(tasks); err != nil {
+		return 0, err
+	}
+
+	if err := ensureLocalDirsExist(tasks); err != nil {
+		return 0, err
+	}
+
+	fmt.Printf("Found %d file(s) to download\n", len(tasks))
 
 	// 使用统一执行引擎
 	transferOpts := &TransferOptions{
@@ -146,6 +164,49 @@ func (c *Client) DownloadDir(remoteDir, localDir string, opts *DownloadOptions) 
 
 // DownloadGlob 使用 glob 模式匹配下载远程文件
 func (c *Client) DownloadGlob(pattern, localPath string, opts *DownloadOptions) (int, error) {
+	return c.DownloadSources([]string{pattern}, localPath, opts)
+}
+
+func (c *Client) collectDownloadSourceTasks(source, localDir string, opts *DownloadOptions, sourceCount int) ([]transferTask, error) {
+	if strings.ContainsAny(source, "*?[]") {
+		return c.collectDownloadGlobTasks(source, localDir, opts)
+	}
+
+	resolvedSource := c.ResolveRemotePath(source)
+	stat, err := c.sftpClient.Stat(resolvedSource)
+	if err != nil {
+		return nil, err
+	}
+
+	if stat.IsDir() {
+		if !opts.Recursive {
+			return nil, fmt.Errorf("%s is a directory, use 'get -r' for recursive download", source)
+		}
+		dirRoot := localDir
+		if sourceCount > 1 {
+			dirRoot = filepath.Join(localDir, filepath.FromSlash(path.Base(resolvedSource)))
+		}
+		tasks, err := c.collectDownloadTasks(resolvedSource, dirRoot, opts.MaxDepth, 0)
+		if err != nil {
+			return nil, fmt.Errorf("collect tasks for %s: %w", source, err)
+		}
+		return tasks, nil
+	}
+
+	localFile := filepath.Join(localDir, path.Base(resolvedSource))
+	if sourceCount > 1 {
+		localFile = filepath.Join(localDir, filepath.FromSlash(explicitRemoteFilePreservePath(source, resolvedSource)))
+	}
+
+	return []transferTask{{
+		localPath:  localFile,
+		remotePath: resolvedSource,
+		isUpload:   false,
+		size:       stat.Size(),
+	}}, nil
+}
+
+func (c *Client) collectDownloadGlobTasks(pattern, localDir string, opts *DownloadOptions) ([]transferTask, error) {
 	if opts == nil {
 		opts = &DownloadOptions{
 			ShowProgress: true,
@@ -180,17 +241,11 @@ func (c *Client) DownloadGlob(pattern, localPath string, opts *DownloadOptions) 
 	// 查找匹配的远程文件
 	matches, err := c.globRemote(fullPattern)
 	if err != nil {
-		return 0, fmt.Errorf("glob pattern: %w", err)
+		return nil, fmt.Errorf("glob pattern: %w", err)
 	}
 
 	if len(matches) == 0 {
-		return 0, fmt.Errorf("no files match pattern: %s", pattern)
-	}
-
-	// 确保本地目标目录存在
-	localPath = c.ResolveLocalPath(localPath)
-	if err := os.MkdirAll(localPath, 0755); err != nil {
-		return 0, fmt.Errorf("create local dir: %w", err)
+		return nil, fmt.Errorf("no files match pattern: %s", pattern)
 	}
 
 	// 收集所有下载任务
@@ -198,7 +253,7 @@ func (c *Client) DownloadGlob(pattern, localPath string, opts *DownloadOptions) 
 	for _, match := range matches {
 		stat, err := c.sftpClient.Stat(match)
 		if err != nil {
-			continue
+			return nil, fmt.Errorf("stat match %s: %w", match, err)
 		}
 
 		if stat.IsDir() {
@@ -206,45 +261,28 @@ func (c *Client) DownloadGlob(pattern, localPath string, opts *DownloadOptions) 
 				continue // 非递归模式跳过目录
 			}
 			// 递归收集目录内的文件
-			localSubDir := localPath
-			if !opts.Flatten {
-				rel := remoteRelativePath(globBaseAbs, match)
-				if rel != "." {
-					mapped := rel
-					if globBasePrefix != "" {
-						mapped = path.Join(globBasePrefix, rel)
-					}
-					localSubDir = filepath.Join(localPath, filepath.FromSlash(mapped))
-				} else {
-					mapped := path.Base(match)
-					if globBasePrefix != "" {
-						mapped = path.Join(globBasePrefix, mapped)
-					}
-					localSubDir = filepath.Join(localPath, filepath.FromSlash(mapped))
-				}
+			mapped := remoteRelativePath(globBaseAbs, match)
+			if mapped == "." {
+				mapped = path.Base(match)
 			}
-			if err := os.MkdirAll(localSubDir, 0755); err != nil {
-				return 0, fmt.Errorf("create local dir %s: %w", localSubDir, err)
+			if globBasePrefix != "" {
+				mapped = path.Join(globBasePrefix, mapped)
 			}
+			localSubDir := filepath.Join(localDir, filepath.FromSlash(mapped))
 			subTasks, err := c.collectDownloadTasks(match, localSubDir, opts.MaxDepth, 0)
 			if err != nil {
-				return 0, fmt.Errorf("collect tasks for %s: %w", match, err)
+				return nil, fmt.Errorf("collect tasks for %s: %w", match, err)
 			}
 			tasks = append(tasks, subTasks...)
 		} else {
-			localFile := filepath.Join(localPath, path.Base(match))
-			if !opts.Flatten {
-				rel := remoteRelativePath(globBaseAbs, match)
-				if rel != "" && rel != "." {
-					mapped := rel
-					if globBasePrefix != "" {
-						mapped = path.Join(globBasePrefix, rel)
-					}
-					localFile = filepath.Join(localPath, filepath.FromSlash(mapped))
-				} else if globBasePrefix != "" {
-					localFile = filepath.Join(localPath, filepath.FromSlash(path.Join(globBasePrefix, path.Base(match))))
-				}
+			mapped := remoteRelativePath(globBaseAbs, match)
+			if mapped == "." {
+				mapped = path.Base(match)
 			}
+			if globBasePrefix != "" {
+				mapped = path.Join(globBasePrefix, mapped)
+			}
+			localFile := filepath.Join(localDir, filepath.FromSlash(mapped))
 			tasks = append(tasks, transferTask{
 				localPath:  localFile,
 				remotePath: match,
@@ -255,24 +293,10 @@ func (c *Client) DownloadGlob(pattern, localPath string, opts *DownloadOptions) 
 	}
 
 	if len(tasks) == 0 {
-		return 0, fmt.Errorf("no files to download")
-	}
-	if opts.Flatten {
-		if err := validateFlattenDownloadCollisions(tasks); err != nil {
-			return 0, err
-		}
+		return nil, fmt.Errorf("no files to download")
 	}
 
-	fmt.Printf("Found %d file(s) to download\n", len(tasks))
-
-	// 使用统一执行引擎
-	transferOpts := &TransferOptions{
-		Recursive:    opts.Recursive,
-		ShowProgress: opts.ShowProgress,
-		Concurrency:  opts.Concurrency,
-		MaxDepth:     opts.MaxDepth,
-	}
-	return c.executeTasks(tasks, transferOpts)
+	return tasks, nil
 }
 
 func remoteGlobBase(pattern string) string {
@@ -296,18 +320,6 @@ func remoteGlobBase(pattern string) string {
 		return "/"
 	}
 	return path.Clean(joined)
-}
-
-func validateFlattenDownloadCollisions(tasks []transferTask) error {
-	seen := make(map[string]struct{})
-	for _, task := range tasks {
-		base := filepath.Base(task.localPath)
-		if _, exists := seen[base]; exists {
-			return fmt.Errorf("duplicate basename in --flatten mode: %s\nHint: remove --flatten or narrow source set", base)
-		}
-		seen[base] = struct{}{}
-	}
-	return nil
 }
 
 func remoteRelativePath(base, target string) string {

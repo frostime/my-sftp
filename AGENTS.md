@@ -200,5 +200,5 @@ Some rules in SKILL are distributed to HOWTOs. If you see `sspec howto xxx` in S
 # SPEC Document
 
 - For project, read .sspec/project.md
-- For total design, read .sspec/spec/architecture.md
-- For SFTP file transfer, read .sspec/spec/sftp-transfer.md
+- For total design, read .sspec/spec-doc/architecture.md
+- For SFTP file transfer, read .sspec/spec-doc/sftp-transfer.md

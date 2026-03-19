@@ -6,6 +6,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"runtime"
 	"runtime/debug"
 	"sort"
 	"strings"
@@ -43,6 +44,143 @@ type TransferOptions struct {
 	ShowProgress bool // 显示进度条
 	Concurrency  int  // 并发数
 	MaxDepth     int  // 最大递归深度：-1=无限, 0=仅当前目录, 1=一层子目录...
+}
+
+func flattenCollisionError(base string) error {
+	return fmt.Errorf("duplicate basename in --flatten mode: %s\nHint: remove --flatten or narrow source set", base)
+}
+
+func taskSourceBaseName(task transferTask) string {
+	if task.isUpload {
+		return filepath.Base(task.localPath)
+	}
+	return path.Base(task.remotePath)
+}
+
+func applyFlattenMapping(tasks []transferTask, targetRoot string) error {
+	seen := make(map[string]struct{}, len(tasks))
+	for _, task := range tasks {
+		base := taskSourceBaseName(task)
+		if _, exists := seen[base]; exists {
+			return flattenCollisionError(base)
+		}
+		seen[base] = struct{}{}
+	}
+
+	for i := range tasks {
+		base := taskSourceBaseName(tasks[i])
+		if tasks[i].isUpload {
+			tasks[i].remotePath = path.Join(targetRoot, base)
+			continue
+		}
+		tasks[i].localPath = filepath.Join(targetRoot, base)
+	}
+
+	return nil
+}
+
+func validateTargetCollisions(tasks []transferTask) error {
+	seen := make(map[string]struct{}, len(tasks))
+	for _, task := range tasks {
+		target := path.Clean(task.remotePath)
+		if !task.isUpload {
+			target = filepath.Clean(task.localPath)
+			if runtime.GOOS == "windows" || runtime.GOOS == "darwin" {
+				target = strings.ToLower(target)
+			}
+		}
+		if _, exists := seen[target]; exists {
+			return fmt.Errorf("duplicate target path in transfer plan: %s", target)
+		}
+		seen[target] = struct{}{}
+	}
+	return nil
+}
+
+func ensureLocalDirsExist(tasks []transferTask) error {
+	for _, task := range tasks {
+		if task.isUpload {
+			continue
+		}
+		dir := filepath.Dir(task.localPath)
+		if dir == "." || dir == "" {
+			continue
+		}
+		if err := os.MkdirAll(dir, 0755); err != nil {
+			return fmt.Errorf("create local dir %s: %w", dir, err)
+		}
+	}
+	return nil
+}
+
+func trimLeadingParentSegments(p string) string {
+	for p == ".." || strings.HasPrefix(p, "../") {
+		p = strings.TrimPrefix(p, "../")
+	}
+	return strings.TrimPrefix(p, "./")
+}
+
+func sanitizeSlashRelativePath(p string) string {
+	p = strings.ReplaceAll(p, "\\", "/")
+	p = path.Clean(p)
+	p = strings.TrimLeft(p, "/")
+	p = trimLeadingParentSegments(p)
+	if p == "" || p == "." {
+		return ""
+	}
+	return p
+}
+
+func explicitRemoteFilePreservePath(source, resolvedSource string) string {
+	if strings.HasPrefix(source, "~/") {
+		rel := sanitizeSlashRelativePath(source[2:])
+		if rel != "" {
+			return rel
+		}
+	}
+	if source == "~" {
+		rel := sanitizeSlashRelativePath(resolvedSource)
+		if rel != "" {
+			return rel
+		}
+	}
+
+	rel := sanitizeSlashRelativePath(source)
+	if rel != "" {
+		return rel
+	}
+	return path.Base(path.Clean(source))
+}
+
+func explicitLocalFilePreservePath(source, resolvedSource string) string {
+	if strings.HasPrefix(source, "~/") || strings.HasPrefix(source, "~\\") {
+		rel := sanitizeSlashRelativePath(source[2:])
+		if rel != "" {
+			return rel
+		}
+	}
+	if source == "~" {
+		cleanedResolved := filepath.Clean(resolvedSource)
+		volume := filepath.VolumeName(cleanedResolved)
+		if volume != "" {
+			cleanedResolved = strings.TrimPrefix(cleanedResolved, volume)
+		}
+		rel := sanitizeSlashRelativePath(filepath.ToSlash(cleanedResolved))
+		if rel != "" {
+			return rel
+		}
+	}
+
+	cleaned := filepath.Clean(source)
+	volume := filepath.VolumeName(cleaned)
+	if volume != "" {
+		cleaned = strings.TrimPrefix(cleaned, volume)
+	}
+	rel := sanitizeSlashRelativePath(filepath.ToSlash(cleaned))
+	if rel != "" {
+		return rel
+	}
+	return path.Base(filepath.ToSlash(cleaned))
 }
 
 // DefaultTransferOptions 返回默认传输选项
@@ -193,11 +331,6 @@ func (c *Client) collectDownloadTasks(remoteDir, localDir string, maxDepth, curr
 			// 检查深度限制
 			if maxDepth >= 0 && currentDepth >= maxDepth {
 				continue // 超过深度限制，跳过此目录
-			}
-
-			// 确保本地目录存在
-			if err := os.MkdirAll(localPath, 0755); err != nil {
-				return nil, fmt.Errorf("create local dir %s: %w", localPath, err)
 			}
 
 			// 递归收集子目录任务

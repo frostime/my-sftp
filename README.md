@@ -73,7 +73,7 @@ After entering the shell, you can use the following commands. **Tip: All paths s
 
 #### ⬇️⬆️ File Transfer
 
-> Supported parameters: `-r` (recursive), `-d/--dir` (destination directory), `--name` (single-file rename), `--flatten` (flatten output structure)
+> Supported parameters: `-r` (recursive), `-d/--dir` (destination directory), `--name` (single-file rename, filename only), `--flatten` (flatten output structure), `--` (treat following tokens as source operands)
 
 | Command | Description           | Example                                               |
 | :------ | :-------------------- | :---------------------------------------------------- |
@@ -86,6 +86,9 @@ After entering the shell, you can use the following commands. **Tip: All paths s
 # Upload all txt files to a remote directory
 > put *.txt -d /data/txt
 
+# Multiple explicit files preserve their source-relative paths
+> put src/a.txt src/nested/b.txt -d /srv/out
+
 # Recursively upload all Go source files (preserve structure by default)
 > put **/*.go -d /srv/src
 
@@ -94,6 +97,9 @@ After entering the shell, you can use the following commands. **Tip: All paths s
 
 # Download specific pattern files
 > get access-*.log -d ./logs
+
+# Use -- when a source name starts with -
+> get -d ./downloads -- -report.txt
 ```
 
 #### 🛠 File Operations
