@@ -1,6 +1,6 @@
 ---
 name: transfer-contract-hardening
-status: REVIEW
+status: DONE
 type: ""
 change-type: single
 created: 2026-03-19T14:34:46
@@ -11,6 +11,9 @@ reference:
   - source: ".sspec/spec-docs/sftp-transfer.md"
     type: "doc"
     note: "Transfer engine behavior and task collection flow."
+  - source: ".sspec/spec-docs/cli-usage.md"
+    type: "doc"
+    note: "Project-level CLI usage contract for interactive shell commands and transfer grammar."
 ---
 
 <!-- @RULE: Frontmatter
@@ -64,6 +67,9 @@ This is intentionally a hardening change, not a rewrite. We keep the explicit sy
 - Multi-source explicit directory operands follow the same operand-relative preserve rule as multi-source explicit files; same-basename directories from different parents must no longer collapse into one target tree.
 - Case comparison policy is now explicit: local download targets use Windows/macOS case-insensitive comparison, while other namespaces default to case-sensitive comparison.
 - Parent-relative explicit operands stay within the target root by encoding leading `..` segments into reserved `__my_sftp_parent__` preserve-path markers rather than silently collapsing them.
+- Runtime review feedback exposed one shell/client mismatch: `get -r` / `put -r` must propagate `MaxDepth: -1`, otherwise recursive directory transfers silently degrade to top-level-only behavior.
+- Runtime review feedback also tightened the source-set rule for globstar planning: overlapping `**` directory/file matches must be normalized before recursive expansion so the same resolved file cannot create false duplicate-target or false flatten-collision errors.
+- Focused runtime retest confirmed the hardened contract now holds for recursive directory transfer, globstar preserve mode, globstar flatten mode, and parent-relative glob placement under the reserved preserve marker namespace.
 
 ### Key Design
 #### Interface Contract
@@ -108,11 +114,11 @@ Preserve-path rules:
    - multiple directory sources preserve each operand-relative source path to avoid namespace collapse
 
 5. Absolute Windows local sources in multi-source preserve mode
-   - preserve the source path under a reserved leading `__my_sftp_volume_<drive>__` segment so different drive roots cannot collapse into one target tree
+    - preserve the source path under a reserved leading `__my_sftp_volume_<drive>__` segment so different drive roots cannot collapse into one target tree
 
-5. Glob sources
-   - preserve path relative to the static prefix before the first wildcard
-   - if there is no static prefix, preserve path relative to current workdir
+6. Glob sources
+    - preserve path relative to the static prefix before the first wildcard
+    - if there is no static prefix, preserve path relative to current workdir
 ```
 
 #### Flatten and Collision Contract

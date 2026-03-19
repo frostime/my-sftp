@@ -27,7 +27,7 @@
 如果你已安装 Go 环境 (1.24+)：
 
 ```bash
-go install my-sftp
+go install github.com/frostime/my-sftp@latest
 ```
 
 源码编译
@@ -64,7 +64,7 @@ my-sftp user@host:2222
 
 | 命令            | 说明           | 示例                 |
 | :------------ | :----------- | :----------------- |
-| `ls`, `ll`    | 列出**远程**目录内容 | `ls -l /var/www`   |
+| `ls`, `ll`    | 列出**远程**目录内容 | `ll /var/www`      |
 | `cd`          | 切换**远程**目录   | `cd /etc`          |
 | `pwd`         | 显示**远程**当前路径 |                    |
 | `lls`, `ldir` | 列出**本地**目录内容 | `lls`              |
@@ -73,7 +73,7 @@ my-sftp user@host:2222
 
 #### ⬇️⬆️ 文件传输
 
-> 支持参数：`-r` (递归)、`-d/--dir` (目标目录)、`--name` (单文件重命名，仅文件名)、`--flatten` (扁平化输出结构)、`--` (将后续参数视为 source)
+> 支持参数：`-r` (递归)、`-d/--dir` (目标目录)、`--name` (单文件重命名，仅文件名)、`--flatten` (扁平化输出结构)、`--` (将后续参数视为 source)。多个显式 source 建议始终显式提供 `-d/--dir`。
 
 | 命令    | 说明      | 示例                                               |
 | :---- | :------ | :----------------------------------------------- |
@@ -89,14 +89,17 @@ my-sftp user@host:2222
 # 多个显式文件会保留各自的源相对路径
 > put src/a.txt src/nested/b.txt -d /srv/out
 
-# 递归上传所有 Go 源代码文件（默认保留目录结构）
-> put **/*.go -d /srv/src
+# 递归上传所有 Go 源代码文件（从静态前缀开始保留目录结构）
+> put src/**/*.go -d /srv/src
 
 # 扁平化输出结构（若文件名冲突会报错）
-> put **/*.go -d /srv/src --flatten
+> put src/**/*.go -d /srv/src --flatten
 
 # 下载特定模式的文件
-> get access-*.log -d ./logs
+> get logs/*.log -d ./backup
+
+# 父级相对路径 source 会通过保留标记留在目标根内
+> put ../logs/*.log -d /srv/backup
 
 # 当 source 名称以 - 开头时，使用 -- 终止选项解析
 > get -d ./downloads -- -report.txt

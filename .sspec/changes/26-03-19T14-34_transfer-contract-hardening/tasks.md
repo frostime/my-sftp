@@ -1,6 +1,6 @@
 ---
 change: "transfer-contract-hardening"
-updated: "2026-03-19T18:15+08:00"
+updated: "2026-03-19T21:14:39+08:00"
 ---
 
 # Tasks
@@ -33,15 +33,17 @@ updated: "2026-03-19T18:15+08:00"
 - [x] Refresh `README.md` and `README.zh.md` to document preserve semantics, `--` usage, and validated flatten guarantees. (Test E)
 **Verification**: `go test ./...` passes and docs examples match the new contract.
 
-### Phase 4: Runtime Validation and Change Closure 🚧
-- [ ] Run the end-to-end transfer matrix against a real SFTP target for single file, explicit multi-source, recursive directory, glob, `--flatten`, collision failure, `--name`, and compatibility fallback scenarios. (Test E)
+### Phase 4: Runtime Validation and Change Closure ✅
+- [x] Run the end-to-end transfer matrix against a real SFTP target for single file, explicit multi-source, recursive directory, glob, `--flatten`, collision failure, `--name`, and compatibility fallback scenarios. (Test E)
 - [x] Sync `.sspec/changes/26-03-19T14-34_transfer-contract-hardening/handover.md` and status fields to match the actual validation state. (Test E)
-**Verification**: runtime notes explicitly distinguish compile/test coverage from real transfer verification.
+**Verification**: `runtime-test-batches.md` and `runtime-retest-minimal-batches.md` capture both the initial runtime findings and the final green retest against a real SFTP target.
 
 ### Feedback Tasks ✅
 - [x] Extend preflight target validation to reject both exact duplicate targets and file-vs-directory prefix conflicts before any transfer side effect.
 - [x] Make multi-source explicit directory operands preserve operand-relative paths instead of collapsing same-basename directories into one target tree.
 - [x] Replace the ad hoc case-fold logic with an explicit comparison policy: Windows/macOS local downloads are case-insensitive; other namespaces default to case-sensitive comparison.
+- [x] Record runtime review feedback that `get -r` / `put -r` lost unlimited recursion because command-layer option builders failed to pass `MaxDepth: -1`, then fix the propagation path.
+- [x] Record runtime review feedback that globstar overlap must be normalized before task expansion, then fix upload/download planning and re-verify with a focused retest.
 
 <!-- @RULE: Organize by phases. Each task <2h, independently testable.
 Phase emoji: ⏳ pending | 🚧 in progress | ✅ done
@@ -60,9 +62,9 @@ If the work should become a new follow-up or replacement change, do not put it h
 ---
 
 ## Progress
-Implementation, review-driven hardening, tests, and user-facing docs are updated; real SFTP runtime validation is still pending before closure.
+Implementation, review-driven hardening, tests, user-facing docs, and real SFTP runtime validation are all complete.
 
-**Overall**: 90%
+**Overall**: 100%
 
 | Phase | Progress | Status |
 |-------|----------|--------|
@@ -70,7 +72,7 @@ Implementation, review-driven hardening, tests, and user-facing docs are updated
 | Phase 1: Shared Mapping Contract | 100% | ✅ |
 | Phase 2: Boundary Hardening and Consistency | 100% | ✅ |
 | Phase 3: Completion, Docs, and Regression Coverage | 100% | ✅ |
-| Phase 4: Runtime Validation and Change Closure | 50% | 🚧 |
+| Phase 4: Runtime Validation and Change Closure | 100% | ✅ |
 
 **Recent**:
-- Applied follow-up review feedback: preflight stays side-effect free until validation passes, parent-relative preserve markers are namespace-safe, and empty directory download behavior is restored.
+- Runtime review feedback is now fully folded back into `spec.md`, `tasks.md`, and the final green retest artifacts.

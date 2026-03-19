@@ -1,6 +1,6 @@
 # Handover: transfer-contract-hardening
 
-**Updated**: 2026-03-19T18:15+08:00
+**Updated**: 2026-03-19T21:14+08:00
 
 ---
 
@@ -32,6 +32,7 @@ If something becomes obsolete, mark it as obsolete with a timestamp instead of d
 
 - `.sspec/changes/26-03-19T01-30_unambiguous-transfer-syntax/spec.md` - previous approved design that this follow-up must preserve at the syntax level.
 - `.sspec/changes/26-03-19T14-34_transfer-contract-hardening/spec.md` - new hardening design derived from audit findings.
+- `.sspec/spec-docs/cli-usage.md` - stable project-level CLI contract covering transfer grammar, option rules, and shell command categories.
 - `shell/shell.go` - current CLI parsing and explicit multi-source behavior gaps.
 - `client/transfer.go` - best location for shared transfer-planning helpers to reduce policy drift.
 - `client/download.go` - current download-side preserve/flatten logic, including glob-directory gaps.
@@ -59,6 +60,9 @@ Project-wide items -> ALSO append to project.md Notes. -->
 - [2026-03-19T17:32+08:00] [Decision] Parent-relative explicit operands preserve distinct namespaces via reserved `__my_sftp_parent__` path markers, and absolute Windows local sources use `__my_sftp_volume_<drive>__` prefixes when preserve mode needs to keep drive roots distinct.
 - [2026-03-19T18:15+08:00] [Decision] Reserved preserve markers are guarded across explicit and glob multi-source preserve inputs so user-provided paths cannot collide with planner-generated marker namespaces.
 - [2026-03-19T18:15+08:00] [Decision] Empty remote-directory downloads still create the local destination directory, but only after preflight validation succeeds.
+- [2026-03-19T21:14+08:00] [VitalFinding] Runtime verification exposed two remaining correctness gaps after the first implementation pass: command-layer recursive transfers were not propagating `MaxDepth: -1`, and globstar overlap had to be normalized before task expansion to avoid false duplicate-path and false flatten-collision failures.
+- [2026-03-19T21:14+08:00] [VerificationShortcut] Real SFTP runtime validation is now green; see `runtime-test-batches.md` for the initial broad run and `runtime-retest-minimal-batches.md` for the focused passing retest.
+- [2026-03-19T21:14+08:00] [Decision] Project-level CLI usage is now documented in `.sspec/spec-docs/cli-usage.md` so the transfer grammar and shell conventions have a stable reference outside this change.
 
 ## Session Log (Append-Only)
 <!-- Newest entry first. Each entry is an atomic batch (one cohesive work record).
@@ -69,21 +73,33 @@ Header format:
 Tags are freeform but must be readable. Examples: work-log, user-feedback, argue, risk.
 Any user interaction (feedback, @align, @argue) MUST start a new log entry. -->
 
-### 2026-03-19T19:10+08:00 [work-log] fix glob planner overlap and parent-relative prefix escape
+### 2026-03-19T21:14+08:00 [work-log] close runtime verification and publish cli usage spec-doc
 
 **Accomplished**
-- Fixed glob planning so recursive directory matches no longer schedule the same resolved file multiple times when `**` returns both directories and files.
-- Normalized relative glob preserve prefixes through the same reserved-marker path encoding used by explicit operands, so parent-relative patterns stay inside the destination root.
-- Added regression coverage for globstar dedupe, parent-relative glob prefix mapping, and shared preserve-path helpers.
-- Added a user-checkable runtime verification checklist in `runtime-test-checklist.md` for real SFTP acceptance.
+- Folded runtime review feedback back into `spec.md` and `tasks.md`, including the recursive-depth propagation fix and the pre-expansion globstar normalization rule.
+- Marked the runtime checklist and Phase 4 state complete using the recorded broad run plus focused retest artifacts.
+- Added `.sspec/spec-docs/cli-usage.md` as a project-level reference for `my-sftp` shell grammar, command categories, transfer options, and path-handling conventions.
+
+**Next**
+- Review the final doc set and decide whether to commit this change set.
+
+**Notes** (optional)
+- Runtime evidence now exists in two layers: the original broad matrix shows the discovered defects, and the minimal retest proves the fixes against the same real SFTP environment.
+
+### 2026-03-19T21:05+08:00 [work-log] fix recursive depth propagation and globstar overlap normalization
+
+**Accomplished**
+- Restored true recursive behavior for shell-driven `get -r` / `put -r` by propagating `MaxDepth: -1` through shared command-option builders.
+- Normalized glob matched source entries before recursive expansion so globstar directory/file overlap no longer turns into duplicate targets or false flatten collisions.
+- Added regression tests for glob overlap normalization and shell option propagation defaults.
 - Re-verified with `go test ./...`.
 
 **Next**
-- Run the real SFTP scenario matrix.
-- Re-review any remaining glob preserve semantics edge cases before marking the change done.
+- Run `runtime-retest-minimal-batches.md` against the real SFTP target.
+- If green, sync checklist items and close remaining Phase 4 runtime verification work.
 
 **Notes** (optional)
-- Exact duplicate explicit source operands are still left to target-collision validation; only duplicate resolved files created by glob expansion are normalized away during planning.
+- The focused runtime retest should pay special attention to final path placement for parent-relative glob cases, not just command success.
 
 ### 2026-03-19T20:55+08:00 [work-log] diagnose runtime verification failures and prepare focused retest
 
@@ -101,20 +117,21 @@ Any user interaction (feedback, @align, @argue) MUST start a new log entry. -->
 **Notes** (optional)
 - The parent-relative glob commands now succeed at runtime, but final path placement still needs explicit filesystem inspection in the focused retest.
 
-### 2026-03-19T21:20+08:00 [work-log] fix recursive depth propagation and globstar overlap normalization
+### 2026-03-19T19:10+08:00 [work-log] fix glob planner overlap and parent-relative prefix escape
 
 **Accomplished**
-- Restored true recursive behavior for shell-driven `get -r` / `put -r` by propagating `MaxDepth: -1` through shared command-option builders.
-- Normalized glob matched source entries before recursive expansion so globstar directory/file overlap no longer turns into duplicate targets or false flatten collisions.
-- Added regression tests for glob overlap normalization and shell option propagation defaults.
+- Fixed glob planning so recursive directory matches no longer schedule the same resolved file multiple times when `**` returns both directories and files.
+- Normalized relative glob preserve prefixes through the same reserved-marker path encoding used by explicit operands, so parent-relative patterns stay inside the destination root.
+- Added regression coverage for globstar dedupe, parent-relative glob prefix mapping, and shared preserve-path helpers.
+- Added a user-checkable runtime verification checklist in `runtime-test-checklist.md` for real SFTP acceptance.
 - Re-verified with `go test ./...`.
 
 **Next**
-- Run `runtime-retest-minimal-batches.md` against the real SFTP target.
-- If green, sync checklist items and close remaining Phase 4 runtime verification work.
+- Run the real SFTP scenario matrix.
+- Re-review any remaining glob preserve semantics edge cases before marking the change done.
 
 **Notes** (optional)
-- The focused runtime retest should pay special attention to final path placement for parent-relative glob cases, not just command success.
+- Exact duplicate explicit source operands are still left to target-collision validation; only duplicate resolved files created by glob expansion are normalized away during planning.
 
 ### 2026-03-19T14:35+08:00 [user-feedback] initiate follow-up change from prior spec
 

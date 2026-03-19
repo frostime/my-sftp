@@ -27,7 +27,7 @@ Say goodbye to the terrible experience of Windows native SFTP CLI. My-SFTP provi
 If you have Go environment installed (1.24+):
 
 ```bash
-go install my-sftp
+go install github.com/frostime/my-sftp@latest
 ```
 
 Build from source:
@@ -64,7 +64,7 @@ After entering the shell, you can use the following commands. **Tip: All paths s
 
 | Command       | Description                     | Example                |
 | :------------ | :------------------------------ | :--------------------- |
-| `ls`, `ll`    | List **remote** directory contents | `ls -l /var/www`       |
+| `ls`, `ll`    | List **remote** directory contents | `ll /var/www`          |
 | `cd`          | Change **remote** directory     | `cd /etc`              |
 | `pwd`         | Show **remote** current path    |                        |
 | `lls`, `ldir` | List **local** directory contents| `lls`                  |
@@ -73,7 +73,7 @@ After entering the shell, you can use the following commands. **Tip: All paths s
 
 #### ⬇️⬆️ File Transfer
 
-> Supported parameters: `-r` (recursive), `-d/--dir` (destination directory), `--name` (single-file rename, filename only), `--flatten` (flatten output structure), `--` (treat following tokens as source operands)
+> Supported parameters: `-r` (recursive), `-d/--dir` (destination directory), `--name` (single-file rename, filename only), `--flatten` (flatten output structure), `--` (treat following tokens as source operands). For multiple explicit sources, prefer an explicit `-d/--dir` target.
 
 | Command | Description           | Example                                               |
 | :------ | :-------------------- | :---------------------------------------------------- |
@@ -89,14 +89,17 @@ After entering the shell, you can use the following commands. **Tip: All paths s
 # Multiple explicit files preserve their source-relative paths
 > put src/a.txt src/nested/b.txt -d /srv/out
 
-# Recursively upload all Go source files (preserve structure by default)
-> put **/*.go -d /srv/src
+# Recursively upload all Go source files (preserve structure from static prefix)
+> put src/**/*.go -d /srv/src
 
 # Flatten output structure (fails on duplicate basenames)
-> put **/*.go -d /srv/src --flatten
+> put src/**/*.go -d /srv/src --flatten
 
 # Download specific pattern files
-> get access-*.log -d ./logs
+> get logs/*.log -d ./backup
+
+# Parent-relative sources stay inside the target root via reserved markers
+> put ../logs/*.log -d /srv/backup
 
 # Use -- when a source name starts with -
 > get -d ./downloads -- -report.txt

@@ -8,12 +8,16 @@ Purpose: manual end-to-end verification against a real SFTP target. Tick each it
 
 For faster execution, you can use the ready-to-paste grouped command batches in `runtime-test-batches.md`.
 
+Verification record:
+- Initial broad runtime run and first-round findings: `runtime-test-batches.md`
+- Focused retest after fixes: `runtime-retest-minimal-batches.md`
+
 ## Test Setup
 
-- [ ] Prepare a clean remote sandbox, for example `/tmp/my-sftp-runtime/`
-- [ ] Prepare a clean local sandbox, for example `./tmp/runtime/`
-- [ ] Start the shell from a clean working directory and record the server/OS used for testing
-- [ ] Keep one terminal open for `my-sftp`, and one terminal open locally/remotely to inspect actual files after each case
+- [x] Prepare a clean remote sandbox, for example `/tmp/my-sftp-runtime/`
+- [x] Prepare a clean local sandbox, for example `./tmp/runtime/`
+- [x] Start the shell from a clean working directory and record the server/OS used for testing
+- [x] Keep one terminal open for `my-sftp`, and one terminal open locally/remotely to inspect actual files after each case
 
 ## Suggested Fixture
 
@@ -204,105 +208,105 @@ Remote:
 
 ## Upload Matrix
 
-- [ ] Single file default target
+- [x] Single file default target
   - Command: `put local/a.txt`
   - Expect: file appears under current remote dir as `a.txt`
 
-- [ ] Single file explicit rename
+- [x] Single file explicit rename
   - Command: `put local/a.txt -d /tmp/my-sftp-runtime/upload-name --name renamed.txt`
   - Expect: only `/tmp/my-sftp-runtime/upload-name/renamed.txt` is created
 
-- [ ] Explicit multi-source preserve structure
+- [x] Explicit multi-source preserve structure
   - Command: `put local/src/a.txt local/src/nested/b.txt -d /tmp/my-sftp-runtime/upload-multi`
   - Expect: remote keeps `src/a.txt` and `src/nested/b.txt` under target root
 
-- [ ] Recursive directory upload
+- [x] Recursive directory upload
   - Command: `put -r local/dir -d /tmp/my-sftp-runtime/upload-dir`
   - Expect: remote contains `root.txt` and `nested/child.txt` under target root
 
-- [ ] Glob preserve structure
+- [x] Glob preserve structure
   - Command: `put local/src/**/*.txt -d /tmp/my-sftp-runtime/upload-glob`
   - Expect: remote keeps relative layout from static prefix, including `src/nested/b.txt`
 
-- [ ] Glob with `**` does not double-plan files
+- [x] Glob with `**` does not double-plan files
   - Command: `put local/dir/** -d /tmp/my-sftp-runtime/upload-globstar -r`
   - Expect: command succeeds without duplicate-target error; each file is uploaded once
 
-- [ ] Glob flatten success
+- [x] Glob flatten success
   - Command: `put local/dir/** -d /tmp/my-sftp-runtime/upload-flatten-ok -r --flatten`
   - Expect: target contains only `root.txt` and `child.txt` at root level
 
-- [ ] Glob flatten duplicate basename failure
+- [x] Glob flatten duplicate basename failure
   - Command: `put local/flat/** -d /tmp/my-sftp-runtime/upload-flatten-dup -r --flatten`
   - Expect: command fails before transfer with duplicate basename error and hint text
 
-- [ ] Dash-leading source with `--`
+- [x] Dash-leading source with `--`
   - Command: `put -d /tmp/my-sftp-runtime/upload-dash -- local/dash/-report.txt`
   - Expect: upload succeeds and remote filename remains `-report.txt`
 
-- [ ] Legacy positional target compatibility
+- [x] Legacy positional target compatibility
   - Command: `put local/src/a.txt /tmp/my-sftp-runtime/upload-legacy`
   - Expect: upload still works via compatibility path; note whether deprecation warning appears
 
 ## Download Matrix
 
-- [ ] Single file default target
+- [x] Single file default target
   - Command: `get remote/a.txt`
   - Expect: file appears in current local dir as `a.txt`
 
-- [ ] Single file explicit rename
+- [x] Single file explicit rename
   - Command: `get remote/a.txt -d ./tmp/runtime/download-name --name renamed.txt`
   - Expect: only `./tmp/runtime/download-name/renamed.txt` is created
 
-- [ ] Explicit multi-source preserve structure
+- [x] Explicit multi-source preserve structure
   - Command: `get remote/src/a.txt remote/src/nested/b.txt -d ./tmp/runtime/download-multi`
   - Expect: local keeps `remote/src/a.txt`-style operand-relative layout under target root according to current contract
 
-- [ ] Recursive directory download
+- [x] Recursive directory download
   - Command: `get -r remote/dir -d ./tmp/runtime/download-dir`
   - Expect: local contains `root.txt` and `nested/child.txt` under target root
 
-- [ ] Glob preserve structure
+- [x] Glob preserve structure
   - Command: `get remote/src/**/*.txt -d ./tmp/runtime/download-glob`
   - Expect: local keeps relative layout from static prefix, including nested files
 
-- [ ] Glob with `**` does not double-plan files
+- [x] Glob with `**` does not double-plan files
   - Command: `get remote/dir/** -d ./tmp/runtime/download-globstar -r`
   - Expect: command succeeds without duplicate-target error; each file is downloaded once
 
-- [ ] Glob flatten success
+- [x] Glob flatten success
   - Command: `get remote/dir/** -d ./tmp/runtime/download-flatten-ok -r --flatten`
   - Expect: target contains only `root.txt` and `child.txt` at root level
 
-- [ ] Glob flatten duplicate basename failure
+- [x] Glob flatten duplicate basename failure
   - Command: `get remote/flat/** -d ./tmp/runtime/download-flatten-dup -r --flatten`
   - Expect: command fails before transfer with duplicate basename error and hint text
 
-- [ ] Dash-leading source with `--`
+- [x] Dash-leading source with `--`
   - Command: `get -d ./tmp/runtime/download-dash -- remote/dash/-report.txt`
   - Expect: download succeeds and local filename remains `-report.txt`
 
 ## Parent-Relative and Boundary Cases
 
-- [ ] Parent-relative upload glob stays inside target root
+- [x] Parent-relative upload glob stays inside target root
   - Precondition: current local working dir is `./tmp/runtime/workspace`, sibling dir `./tmp/runtime/logs/app.log` exists
   - Command: `put ../logs/*.log -d /tmp/my-sftp-runtime/upload-parent-glob`
   - Expect: remote file lands under `/tmp/my-sftp-runtime/upload-parent-glob/__my_sftp_parent__/logs/app.log`, not outside target root
 
-- [ ] Parent-relative download glob stays inside target root
+- [x] Parent-relative download glob stays inside target root
   - Precondition: current remote working dir is a directory whose sibling `../logs/app.log` exists
   - Command: `get ../logs/*.log -d ./tmp/runtime/download-parent-glob`
   - Expect: local file lands under `./tmp/runtime/download-parent-glob/__my_sftp_parent__/logs/app.log`, not outside target root
 
-- [ ] Invalid `--name` with path separator is rejected
+- [x] Invalid `--name` with path separator is rejected
   - Command: `put local/a.txt -d /tmp/my-sftp-runtime/invalid-name --name nested/out.txt`
   - Expect: command fails immediately with filename-only validation error
 
-- [ ] Multiple sources without `-d` are rejected
+- [x] Multiple sources without `-d` are rejected
   - Command: `get remote/src/a.txt remote/src/nested/b.txt`
   - Expect: command fails with explicit destination requirement unless compatibility fallback intentionally applies
 
 ## Notes
 
-- [ ] Record any mismatch, including exact command, output, and observed filesystem state
-- [ ] After all applicable cases pass, use this checklist as evidence to close Phase 4 in `tasks.md`
+- [x] Record any mismatch, including exact command, output, and observed filesystem state
+- [x] After all applicable cases pass, use this checklist as evidence to close Phase 4 in `tasks.md`
