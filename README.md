@@ -39,7 +39,7 @@ go build -o my-sftp main.go
 
 ## ✅ Is this project worth downloading locally?
 
-**Short answer**: Yes—if you want a significantly better interactive SFTP CLI experience (especially on Windows), this project is useful in practice. If you need enterprise-grade automation and reliability features (resume, retries, full audit logging), treat it as a productivity tool rather than critical infrastructure.
+**Short answer**: It depends on your use case. For interactive SFTP work with TAB completion, command history, and transfer progress bars, this project is practical (including Windows environments). For enterprise-grade automation and reliability features (resume, retries, full audit logging), treat it as a productivity tool rather than critical infrastructure.
 
 ### Good fit (recommended)
 
@@ -50,6 +50,7 @@ go build -o my-sftp main.go
 ### Evaluate first (may not fit)
 
 - You require non-interactive script/CI workflow as the primary mode.
+- The current design is centered on interactive shell usage, so automation-first workflows should be evaluated separately.
 - You need enterprise-grade transfer guarantees (resume, automatic retry, full observability).
 - You expect high automated test coverage across all modules (current coverage is strongest in `client/` and `shell/`).
 
