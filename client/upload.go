@@ -222,9 +222,7 @@ func (c *Client) collectUploadGlobTasks(pattern, remotePath string, opts *Upload
 			globBase = "."
 		}
 		globBaseAbs = filepath.Clean(filepath.Join(basePath, globBase))
-		if globBase != "." {
-			globBasePrefix = filepath.ToSlash(globBase)
-		}
+		globBasePrefix = localGlobPreservePrefix(globBase, globBaseAbs)
 	}
 
 	// 使用 doublestar 支持 ** 递归匹配
@@ -254,13 +252,7 @@ func (c *Client) collectUploadGlobTasks(pattern, remotePath string, opts *Upload
 			if relErr != nil {
 				return nil, fmt.Errorf("relative path for %s: %w", match, relErr)
 			}
-			mappedSlash := filepath.ToSlash(mapped)
-			if mappedSlash == "." {
-				mappedSlash = path.Base(filepath.ToSlash(match))
-			}
-			if globBasePrefix != "" {
-				mappedSlash = path.Join(globBasePrefix, mappedSlash)
-			}
+			mappedSlash := joinPreservePath(globBasePrefix, filepath.ToSlash(mapped))
 			remoteSubDir := path.Join(remotePath, mappedSlash)
 			subTasks, err := c.collectUploadTasks(match, remoteSubDir, opts.MaxDepth, 0)
 			if err != nil {
@@ -272,13 +264,7 @@ func (c *Client) collectUploadGlobTasks(pattern, remotePath string, opts *Upload
 			if relErr != nil {
 				return nil, fmt.Errorf("relative path for %s: %w", match, relErr)
 			}
-			mappedSlash := filepath.ToSlash(mapped)
-			if mappedSlash == "." {
-				mappedSlash = path.Base(filepath.ToSlash(match))
-			}
-			if globBasePrefix != "" {
-				mappedSlash = path.Join(globBasePrefix, mappedSlash)
-			}
+			mappedSlash := joinPreservePath(globBasePrefix, filepath.ToSlash(mapped))
 			remoteFile := path.Join(remotePath, mappedSlash)
 			tasks = append(tasks, transferTask{
 				localPath:  match,
@@ -293,7 +279,7 @@ func (c *Client) collectUploadGlobTasks(pattern, remotePath string, opts *Upload
 		return nil, fmt.Errorf("no files to upload")
 	}
 
-	return tasks, nil
+	return dedupeResolvedSourceTasks(tasks), nil
 }
 
 // UploadDir 递归上传整个目录

@@ -244,9 +244,7 @@ func (c *Client) collectDownloadGlobTasks(pattern, localDir string, opts *Downlo
 			globBase = "."
 		}
 		globBaseAbs = path.Clean(path.Join(basePath, globBase))
-		if globBase != "." {
-			globBasePrefix = globBase
-		}
+		globBasePrefix = remoteGlobPreservePrefix(globBase, globBaseAbs)
 	}
 
 	// 查找匹配的远程文件
@@ -273,12 +271,7 @@ func (c *Client) collectDownloadGlobTasks(pattern, localDir string, opts *Downlo
 			}
 			// 递归收集目录内的文件
 			mapped := remoteRelativePath(globBaseAbs, match)
-			if mapped == "." {
-				mapped = path.Base(match)
-			}
-			if globBasePrefix != "" {
-				mapped = path.Join(globBasePrefix, mapped)
-			}
+			mapped = joinPreservePath(globBasePrefix, mapped)
 			localSubDir := filepath.Join(localDir, filepath.FromSlash(mapped))
 			subTasks, err := c.collectDownloadTasks(match, localSubDir, opts.MaxDepth, 0)
 			if err != nil {
@@ -287,12 +280,7 @@ func (c *Client) collectDownloadGlobTasks(pattern, localDir string, opts *Downlo
 			tasks = append(tasks, subTasks...)
 		} else {
 			mapped := remoteRelativePath(globBaseAbs, match)
-			if mapped == "." {
-				mapped = path.Base(match)
-			}
-			if globBasePrefix != "" {
-				mapped = path.Join(globBasePrefix, mapped)
-			}
+			mapped = joinPreservePath(globBasePrefix, mapped)
 			localFile := filepath.Join(localDir, filepath.FromSlash(mapped))
 			tasks = append(tasks, transferTask{
 				localPath:  localFile,
@@ -307,7 +295,7 @@ func (c *Client) collectDownloadGlobTasks(pattern, localDir string, opts *Downlo
 		return nil, fmt.Errorf("no files to download")
 	}
 
-	return tasks, nil
+	return dedupeResolvedSourceTasks(tasks), nil
 }
 
 func remoteGlobBase(pattern string) string {

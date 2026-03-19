@@ -1,9 +1,11 @@
 package client
 
 import (
+	"os"
 	"path"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"testing"
 )
 
@@ -129,6 +131,116 @@ func TestExplicitLocalFilePreservePathWindowsVolumeRoot(t *testing.T) {
 	got := explicitLocalFilePreservePath(`C:\`, `C:\`)
 	if got != preserveMetaPrefix+"volume_c__" {
 		t.Fatalf("explicitLocalFilePreservePath(volume root) = %q", got)
+	}
+}
+
+func TestLocalGlobPreservePrefixParentRelative(t *testing.T) {
+	base := filepath.Join(string(filepath.Separator), "workspace", "logs")
+	got := localGlobPreservePrefix(filepath.Join("..", "logs"), base)
+	if got != preserveParentMarker+"/logs" {
+		t.Fatalf("localGlobPreservePrefix(parent) = %q", got)
+	}
+}
+
+func TestRemoteGlobPreservePrefixParentRelative(t *testing.T) {
+	got := remoteGlobPreservePrefix("../logs", "/srv/logs")
+	if got != preserveParentMarker+"/logs" {
+		t.Fatalf("remoteGlobPreservePrefix(parent) = %q", got)
+	}
+}
+
+func TestJoinPreservePath(t *testing.T) {
+	tests := []struct {
+		name   string
+		prefix string
+		rel    string
+		want   string
+	}{
+		{name: "root dir match keeps prefix once", prefix: "dir", rel: ".", want: "dir"},
+		{name: "nested relative path", prefix: "dir", rel: "sub/file.txt", want: "dir/sub/file.txt"},
+		{name: "parent marker prefix", prefix: preserveParentMarker + "/logs", rel: "app.log", want: preserveParentMarker + "/logs/app.log"},
+		{name: "no prefix", prefix: "", rel: "sub/file.txt", want: "sub/file.txt"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := joinPreservePath(tt.prefix, tt.rel)
+			if got != tt.want {
+				t.Fatalf("joinPreservePath(%q, %q) = %q, want %q", tt.prefix, tt.rel, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestDedupeResolvedSourceTasks(t *testing.T) {
+	tasks := []transferTask{
+		{localPath: filepath.Join("src", "dir", "root.txt"), remotePath: "/dest/dir/root.txt", isUpload: true},
+		{localPath: filepath.Join("src", "dir", "root.txt"), remotePath: "/dest/dir/root.txt", isUpload: true},
+		{localPath: filepath.Join("src", "dir", "nested.txt"), remotePath: "/dest/dir/nested.txt", isUpload: true},
+	}
+
+	deduped := dedupeResolvedSourceTasks(tasks)
+	if len(deduped) != 2 {
+		t.Fatalf("dedupeResolvedSourceTasks() len = %d, want 2", len(deduped))
+	}
+}
+
+func TestCollectUploadGlobTasksDedupesGlobstarDirectoryMatches(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "dir", "nested"), 0755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "dir", "root.txt"), []byte("root"), 0644); err != nil {
+		t.Fatalf("write root file: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "dir", "nested", "child.txt"), []byte("child"), 0644); err != nil {
+		t.Fatalf("write child file: %v", err)
+	}
+
+	c := &Client{localWorkDir: root}
+	tasks, err := c.collectUploadGlobTasks(filepath.Join("dir", "**"), "/dest", &UploadOptions{Recursive: true, MaxDepth: -1})
+	if err != nil {
+		t.Fatalf("collectUploadGlobTasks() error = %v", err)
+	}
+
+	if len(tasks) != 2 {
+		t.Fatalf("collectUploadGlobTasks() len = %d, want 2", len(tasks))
+	}
+
+	got := []string{path.Clean(tasks[0].remotePath), path.Clean(tasks[1].remotePath)}
+	sort.Strings(got)
+	want := []string{"/dest/dir/nested/child.txt", "/dest/dir/root.txt"}
+	if got[0] != want[0] || got[1] != want[1] {
+		t.Fatalf("collectUploadGlobTasks() remote paths = %#v, want %#v", got, want)
+	}
+}
+
+func TestCollectUploadGlobTasksKeepsParentRelativePrefixInsideTargetRoot(t *testing.T) {
+	root := t.TempDir()
+	workDir := filepath.Join(root, "workspace")
+	logsDir := filepath.Join(root, "logs")
+	if err := os.MkdirAll(workDir, 0755); err != nil {
+		t.Fatalf("mkdir workspace: %v", err)
+	}
+	if err := os.MkdirAll(logsDir, 0755); err != nil {
+		t.Fatalf("mkdir logs: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(logsDir, "app.log"), []byte("log"), 0644); err != nil {
+		t.Fatalf("write log file: %v", err)
+	}
+
+	c := &Client{localWorkDir: workDir}
+	tasks, err := c.collectUploadGlobTasks(filepath.Join("..", "logs", "*.log"), "/dest", &UploadOptions{Recursive: true, MaxDepth: -1})
+	if err != nil {
+		t.Fatalf("collectUploadGlobTasks() error = %v", err)
+	}
+
+	if len(tasks) != 1 {
+		t.Fatalf("collectUploadGlobTasks() len = %d, want 1", len(tasks))
+	}
+	want := path.Join("/dest", preserveParentMarker, "logs", "app.log")
+	if got := path.Clean(tasks[0].remotePath); got != want {
+		t.Fatalf("collectUploadGlobTasks() remote path = %q, want %q", got, want)
 	}
 }
 

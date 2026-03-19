@@ -288,6 +288,56 @@ func explicitLocalFilePreservePath(source, resolvedSource string) string {
 	return base
 }
 
+func localGlobPreservePrefix(globBase, globBaseAbs string) string {
+	if globBase == "" || globBase == "." || globBase == string(filepath.Separator) {
+		return ""
+	}
+	return explicitLocalFilePreservePath(globBase, globBaseAbs)
+}
+
+func remoteGlobPreservePrefix(globBase, globBaseAbs string) string {
+	if globBase == "" || globBase == "." || globBase == "/" {
+		return ""
+	}
+	return explicitRemoteFilePreservePath(globBase, globBaseAbs)
+}
+
+func joinPreservePath(prefix, rel string) string {
+	rel = strings.TrimPrefix(rel, "./")
+	if rel == "." {
+		rel = ""
+	}
+	switch {
+	case prefix == "":
+		return rel
+	case rel == "":
+		return prefix
+	default:
+		return path.Join(prefix, rel)
+	}
+}
+
+func taskSourcePath(task transferTask) string {
+	if task.isUpload {
+		return filepath.Clean(task.localPath)
+	}
+	return path.Clean(task.remotePath)
+}
+
+func dedupeResolvedSourceTasks(tasks []transferTask) []transferTask {
+	seen := make(map[string]struct{}, len(tasks))
+	deduped := make([]transferTask, 0, len(tasks))
+	for _, task := range tasks {
+		key := taskSourcePath(task)
+		if _, exists := seen[key]; exists {
+			continue
+		}
+		seen[key] = struct{}{}
+		deduped = append(deduped, task)
+	}
+	return deduped
+}
+
 // DefaultTransferOptions 返回默认传输选项
 func DefaultTransferOptions() *TransferOptions {
 	return &TransferOptions{

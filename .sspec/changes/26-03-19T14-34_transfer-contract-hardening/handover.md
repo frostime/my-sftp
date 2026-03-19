@@ -69,6 +69,53 @@ Header format:
 Tags are freeform but must be readable. Examples: work-log, user-feedback, argue, risk.
 Any user interaction (feedback, @align, @argue) MUST start a new log entry. -->
 
+### 2026-03-19T19:10+08:00 [work-log] fix glob planner overlap and parent-relative prefix escape
+
+**Accomplished**
+- Fixed glob planning so recursive directory matches no longer schedule the same resolved file multiple times when `**` returns both directories and files.
+- Normalized relative glob preserve prefixes through the same reserved-marker path encoding used by explicit operands, so parent-relative patterns stay inside the destination root.
+- Added regression coverage for globstar dedupe, parent-relative glob prefix mapping, and shared preserve-path helpers.
+- Added a user-checkable runtime verification checklist in `runtime-test-checklist.md` for real SFTP acceptance.
+- Re-verified with `go test ./...`.
+
+**Next**
+- Run the real SFTP scenario matrix.
+- Re-review any remaining glob preserve semantics edge cases before marking the change done.
+
+**Notes** (optional)
+- Exact duplicate explicit source operands are still left to target-collision validation; only duplicate resolved files created by glob expansion are normalized away during planning.
+
+### 2026-03-19T20:55+08:00 [work-log] diagnose runtime verification failures and prepare focused retest
+
+**Accomplished**
+- Reviewed the recorded runtime batch output and confirmed two live correctness defects remain.
+- Located the recursive directory regression at `shell/shell.go`: `cmdGet` / `cmdPut` pass `Recursive` but forget `MaxDepth: -1`, so `-r` currently behaves like depth `0` and only transfers top-level files.
+- Localized the remaining `**` overlap issue to glob planning normalization: the planner still validates collisions after expanding overlapping directory matches from globstar, instead of first normalizing the matched source-entry set.
+- Added a separate minimal retest batch file focused only on the still-open defects and the parent-relative path guard.
+
+**Next**
+- Fix shell option propagation so recursive directory commands restore unlimited depth.
+- Move globstar overlap normalization earlier in planning (before recursive expansion / final collision validation) for both upload and download paths.
+- Re-run the focused retest batches, then update the main runtime checklist with pass/fail status.
+
+**Notes** (optional)
+- The parent-relative glob commands now succeed at runtime, but final path placement still needs explicit filesystem inspection in the focused retest.
+
+### 2026-03-19T21:20+08:00 [work-log] fix recursive depth propagation and globstar overlap normalization
+
+**Accomplished**
+- Restored true recursive behavior for shell-driven `get -r` / `put -r` by propagating `MaxDepth: -1` through shared command-option builders.
+- Normalized glob matched source entries before recursive expansion so globstar directory/file overlap no longer turns into duplicate targets or false flatten collisions.
+- Added regression tests for glob overlap normalization and shell option propagation defaults.
+- Re-verified with `go test ./...`.
+
+**Next**
+- Run `runtime-retest-minimal-batches.md` against the real SFTP target.
+- If green, sync checklist items and close remaining Phase 4 runtime verification work.
+
+**Notes** (optional)
+- The focused runtime retest should pay special attention to final path placement for parent-relative glob cases, not just command success.
+
 ### 2026-03-19T14:35+08:00 [user-feedback] initiate follow-up change from prior spec
 
 **Accomplished**
