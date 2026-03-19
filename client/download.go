@@ -100,7 +100,17 @@ func (c *Client) DownloadDir(remoteDir, localDir string, opts *DownloadOptions) 
 	if !stat.IsDir() {
 		return 0, fmt.Errorf("not a directory: %s", resolvedDir)
 	}
-	return c.DownloadSources([]string{remoteDir}, localDir, opts)
+	count, err := c.DownloadSources([]string{remoteDir}, localDir, opts)
+	if err != nil {
+		return 0, err
+	}
+	if count == 0 {
+		resolvedLocalDir := c.ResolveLocalPath(localDir)
+		if err := os.MkdirAll(resolvedLocalDir, 0755); err != nil {
+			return 0, fmt.Errorf("create local dir: %w", err)
+		}
+	}
+	return count, nil
 }
 
 // DownloadSources 下载一个或多个远程 source（显式路径或 glob）
@@ -118,11 +128,6 @@ func (c *Client) DownloadSources(remoteSources []string, localDir string, opts *
 	}
 
 	localDir = c.ResolveLocalPath(localDir)
-
-	// 确保本地目录存在
-	if err := os.MkdirAll(localDir, 0755); err != nil {
-		return 0, fmt.Errorf("create local dir: %w", err)
-	}
 
 	var tasks []transferTask
 	for _, source := range remoteSources {
@@ -144,6 +149,9 @@ func (c *Client) DownloadSources(remoteSources []string, localDir string, opts *
 	}
 	if err := validateTargetCollisions(tasks); err != nil {
 		return 0, err
+	}
+	if err := os.MkdirAll(localDir, 0755); err != nil {
+		return 0, fmt.Errorf("create local dir: %w", err)
 	}
 
 	if err := ensureLocalDirsExist(tasks); err != nil {
@@ -168,6 +176,9 @@ func (c *Client) DownloadGlob(pattern, localPath string, opts *DownloadOptions) 
 }
 
 func (c *Client) collectDownloadSourceTasks(source, localDir string, opts *DownloadOptions, sourceCount int) ([]transferTask, error) {
+	if sourceCount > 1 && !opts.Flatten && usesReservedPreservePrefix(source, false) {
+		return nil, fmt.Errorf("source path uses reserved preserve prefix: %s", source)
+	}
 	if strings.ContainsAny(source, "*?[]") {
 		return c.collectDownloadGlobTasks(source, localDir, opts)
 	}
@@ -184,7 +195,7 @@ func (c *Client) collectDownloadSourceTasks(source, localDir string, opts *Downl
 		}
 		dirRoot := localDir
 		if sourceCount > 1 {
-			dirRoot = filepath.Join(localDir, filepath.FromSlash(path.Base(resolvedSource)))
+			dirRoot = filepath.Join(localDir, filepath.FromSlash(explicitRemoteFilePreservePath(source, resolvedSource)))
 		}
 		tasks, err := c.collectDownloadTasks(resolvedSource, dirRoot, opts.MaxDepth, 0)
 		if err != nil {

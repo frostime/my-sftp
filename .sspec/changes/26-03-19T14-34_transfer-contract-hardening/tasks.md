@@ -1,6 +1,6 @@
 ---
 change: "transfer-contract-hardening"
-updated: "2026-03-19T16:13+08:00"
+updated: "2026-03-19T18:15+08:00"
 ---
 
 # Tasks
@@ -38,6 +38,11 @@ updated: "2026-03-19T16:13+08:00"
 - [x] Sync `.sspec/changes/26-03-19T14-34_transfer-contract-hardening/handover.md` and status fields to match the actual validation state. (Test E)
 **Verification**: runtime notes explicitly distinguish compile/test coverage from real transfer verification.
 
+### Feedback Tasks ✅
+- [x] Extend preflight target validation to reject both exact duplicate targets and file-vs-directory prefix conflicts before any transfer side effect.
+- [x] Make multi-source explicit directory operands preserve operand-relative paths instead of collapsing same-basename directories into one target tree.
+- [x] Replace the ad hoc case-fold logic with an explicit comparison policy: Windows/macOS local downloads are case-insensitive; other namespaces default to case-sensitive comparison.
+
 <!-- @RULE: Organize by phases. Each task <2h, independently testable.
 Phase emoji: ⏳ pending | 🚧 in progress | ✅ done
 
@@ -55,9 +60,9 @@ If the work should become a new follow-up or replacement change, do not put it h
 ---
 
 ## Progress
-Implementation, tests, and user-facing docs are updated; real SFTP runtime validation is still pending before closure.
+Implementation, review-driven hardening, tests, and user-facing docs are updated; real SFTP runtime validation is still pending before closure.
 
-**Overall**: 85%
+**Overall**: 90%
 
 | Phase | Progress | Status |
 |-------|----------|--------|
@@ -68,4 +73,4 @@ Implementation, tests, and user-facing docs are updated; real SFTP runtime valid
 | Phase 4: Runtime Validation and Change Closure | 50% | 🚧 |
 
 **Recent**:
-- Implemented the transfer hardening pass, added focused regression tests, and moved the change to review state pending real SFTP validation.
+- Applied follow-up review feedback: preflight stays side-effect free until validation passes, parent-relative preserve markers are namespace-safe, and empty directory download behavior is restored.

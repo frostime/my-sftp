@@ -15,7 +15,7 @@ func TestExplicitRemoteFilePreservePath(t *testing.T) {
 	}{
 		{name: "simple relative", source: "a/x.txt", want: "a/x.txt"},
 		{name: "dot relative", source: "./a/x.txt", want: "a/x.txt"},
-		{name: "parent relative", source: "../a/x.txt", want: "a/x.txt"},
+		{name: "parent relative", source: "../a/x.txt", want: preserveParentMarker + "/a/x.txt"},
 		{name: "absolute", source: "/etc/ssh/sshd_config", want: "etc/ssh/sshd_config"},
 	}
 
@@ -36,6 +36,27 @@ func TestExplicitRemoteFilePreservePathExpandsHomeSource(t *testing.T) {
 	}
 }
 
+func TestExplicitRemoteFilePreservePathForBareHomeSource(t *testing.T) {
+	got := explicitRemoteFilePreservePath("~", "/home/demo")
+	if got != "demo" {
+		t.Fatalf("explicitRemoteFilePreservePath(bare home) = %q", got)
+	}
+}
+
+func TestExplicitRemoteFilePreservePathForDirectorySource(t *testing.T) {
+	got := explicitRemoteFilePreservePath("a/config", "/srv/a/config")
+	if got != "a/config" {
+		t.Fatalf("explicitRemoteFilePreservePath(dir) = %q", got)
+	}
+}
+
+func TestExplicitRemoteFilePreservePathForCurrentDirectorySource(t *testing.T) {
+	got := explicitRemoteFilePreservePath(".", "/srv/current")
+	if got != "current" {
+		t.Fatalf("explicitRemoteFilePreservePath(current dir) = %q", got)
+	}
+}
+
 func TestExplicitLocalFilePreservePath(t *testing.T) {
 	tests := []struct {
 		name   string
@@ -43,7 +64,7 @@ func TestExplicitLocalFilePreservePath(t *testing.T) {
 		want   string
 	}{
 		{name: "simple relative", source: filepath.Join("a", "x.txt"), want: "a/x.txt"},
-		{name: "parent relative", source: filepath.Join("..", "a", "x.txt"), want: "a/x.txt"},
+		{name: "parent relative", source: filepath.Join("..", "a", "x.txt"), want: preserveParentMarker + "/a/x.txt"},
 		{name: "absolute path", source: filepath.Join(string(filepath.Separator), "work", "a", "x.txt"), want: "work/a/x.txt"},
 	}
 
@@ -62,6 +83,52 @@ func TestExplicitLocalFilePreservePathExpandsHomeSource(t *testing.T) {
 	got := explicitLocalFilePreservePath("~/a.txt", resolved)
 	if got != "a.txt" {
 		t.Fatalf("explicitLocalFilePreservePath(home) = %q", got)
+	}
+}
+
+func TestExplicitLocalFilePreservePathForBareHomeSource(t *testing.T) {
+	resolved := filepath.Join(string(filepath.Separator), "Users", "demo")
+	got := explicitLocalFilePreservePath("~", resolved)
+	if got != "demo" {
+		t.Fatalf("explicitLocalFilePreservePath(bare home) = %q", got)
+	}
+}
+
+func TestExplicitLocalFilePreservePathForDirectorySource(t *testing.T) {
+	resolved := filepath.Join("workspace", "a", "config")
+	got := explicitLocalFilePreservePath(filepath.Join("a", "config"), resolved)
+	if got != "a/config" {
+		t.Fatalf("explicitLocalFilePreservePath(dir) = %q", got)
+	}
+}
+
+func TestExplicitLocalFilePreservePathForCurrentDirectorySource(t *testing.T) {
+	resolved := filepath.Join("workspace", "current")
+	got := explicitLocalFilePreservePath(".", resolved)
+	if got != "current" {
+		t.Fatalf("explicitLocalFilePreservePath(current dir) = %q", got)
+	}
+}
+
+func TestExplicitLocalFilePreservePathWindowsVolume(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("windows-specific volume behavior")
+	}
+
+	got := explicitLocalFilePreservePath(`C:\work\a\config`, `C:\work\a\config`)
+	if got != preserveMetaPrefix+"volume_c__/work/a/config" {
+		t.Fatalf("explicitLocalFilePreservePath(volume) = %q", got)
+	}
+}
+
+func TestExplicitLocalFilePreservePathWindowsVolumeRoot(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("windows-specific volume behavior")
+	}
+
+	got := explicitLocalFilePreservePath(`C:\`, `C:\`)
+	if got != preserveMetaPrefix+"volume_c__" {
+		t.Fatalf("explicitLocalFilePreservePath(volume root) = %q", got)
 	}
 }
 
@@ -116,6 +183,22 @@ func TestApplyFlattenMappingDetectsDuplicateBasename(t *testing.T) {
 	}
 }
 
+func TestApplyFlattenMappingDetectsWindowsCaseFoldDuplicate(t *testing.T) {
+	if runtime.GOOS != "windows" && runtime.GOOS != "darwin" {
+		t.Skip("case-fold flatten collision behavior is platform-specific")
+	}
+
+	tasks := []transferTask{
+		{remotePath: "/srv/a/Readme.txt", localPath: filepath.Join("out", "a", "Readme.txt")},
+		{remotePath: "/srv/b/README.txt", localPath: filepath.Join("out", "b", "README.txt")},
+	}
+
+	err := applyFlattenMapping(tasks, "out")
+	if err == nil {
+		t.Fatal("expected case-insensitive flatten collision")
+	}
+}
+
 func TestValidateTargetCollisionsDownload(t *testing.T) {
 	tasks := []transferTask{
 		{remotePath: "/srv/a/readme.md", localPath: filepath.Join("out", "shared", "readme.md")},
@@ -144,6 +227,18 @@ func TestValidateTargetCollisionsDownloadCaseFold(t *testing.T) {
 	}
 }
 
+func TestValidateTargetCollisionsDownloadPrefixConflict(t *testing.T) {
+	tasks := []transferTask{
+		{remotePath: "/srv/a", localPath: filepath.Join("out", "shared", "a")},
+		{remotePath: "/srv/a/b.txt", localPath: filepath.Join("out", "shared", "a", "b.txt")},
+	}
+
+	err := validateTargetCollisions(tasks)
+	if err == nil {
+		t.Fatal("expected prefix target collision")
+	}
+}
+
 func TestValidateTargetCollisionsUpload(t *testing.T) {
 	tasks := []transferTask{
 		{localPath: filepath.Join("src", "a", "x.txt"), remotePath: "/dest/shared/x.txt", isUpload: true},
@@ -153,5 +248,52 @@ func TestValidateTargetCollisionsUpload(t *testing.T) {
 	err := validateTargetCollisions(tasks)
 	if err == nil {
 		t.Fatal("expected duplicate target collision")
+	}
+}
+
+func TestValidateTargetCollisionsUploadPrefixConflict(t *testing.T) {
+	tasks := []transferTask{
+		{localPath: filepath.Join("src", "a"), remotePath: "/dest/shared/a", isUpload: true},
+		{localPath: filepath.Join("src", "b.txt"), remotePath: "/dest/shared/a/b.txt", isUpload: true},
+	}
+
+	err := validateTargetCollisions(tasks)
+	if err == nil {
+		t.Fatal("expected prefix target collision")
+	}
+}
+
+func TestExplicitPreservePathKeepsDistinctParentPrefixes(t *testing.T) {
+	remoteA := explicitRemoteFilePreservePath("../cfg", "/srv/cfg")
+	remoteB := explicitRemoteFilePreservePath("../../cfg", "/srv/cfg")
+	if remoteA == remoteB {
+		t.Fatalf("remote preserve paths collapsed: %q", remoteA)
+	}
+
+	localA := explicitLocalFilePreservePath(filepath.Join("..", "cfg"), filepath.Join("workspace", "cfg"))
+	localB := explicitLocalFilePreservePath(filepath.Join("..", "..", "cfg"), filepath.Join("workspace", "cfg"))
+	if localA == localB {
+		t.Fatalf("local preserve paths collapsed: %q", localA)
+	}
+}
+
+func TestUsesReservedPreservePrefix(t *testing.T) {
+	if !usesReservedPreservePrefix(preserveParentMarker+"/cfg", false) {
+		t.Fatal("expected reserved prefix detection for remote source")
+	}
+	if !usesReservedPreservePrefix(preserveParentMarker+"/*", false) {
+		t.Fatal("expected reserved prefix detection for remote glob source")
+	}
+	if !usesReservedPreservePrefix("../"+preserveParentMarker+"/cfg", false) {
+		t.Fatal("expected reserved prefix detection for nested parent marker")
+	}
+	if !usesReservedPreservePrefix(preserveMetaPrefix+"volume_c__/cfg", true) {
+		t.Fatal("expected reserved prefix detection for local source")
+	}
+	if runtime.GOOS == "windows" && usesReservedPreservePrefix(`C:\__my_sftp_parent__\*`, true) {
+		t.Fatal("did not expect absolute Windows volume source to be rejected")
+	}
+	if usesReservedPreservePrefix("../cfg", false) {
+		t.Fatal("did not expect parent-relative source to count as reserved prefix")
 	}
 }

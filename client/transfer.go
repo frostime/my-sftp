@@ -16,6 +16,11 @@ import (
 	"github.com/schollz/progressbar/v3"
 )
 
+const (
+	preserveMetaPrefix   = "__my_sftp_"
+	preserveParentMarker = "__my_sftp_parent__"
+)
+
 // formatBytes 将字节数格式化为人类可读的形式
 func formatBytes(bytes int64) string {
 	const unit = 1024
@@ -57,14 +62,22 @@ func taskSourceBaseName(task transferTask) string {
 	return path.Base(task.remotePath)
 }
 
+func flattenCollisionKey(task transferTask) string {
+	base := taskSourceBaseName(task)
+	if !task.isUpload && (runtime.GOOS == "windows" || runtime.GOOS == "darwin") {
+		return strings.ToLower(base)
+	}
+	return base
+}
+
 func applyFlattenMapping(tasks []transferTask, targetRoot string) error {
 	seen := make(map[string]struct{}, len(tasks))
 	for _, task := range tasks {
-		base := taskSourceBaseName(task)
-		if _, exists := seen[base]; exists {
-			return flattenCollisionError(base)
+		key := flattenCollisionKey(task)
+		if _, exists := seen[key]; exists {
+			return flattenCollisionError(taskSourceBaseName(task))
 		}
-		seen[base] = struct{}{}
+		seen[key] = struct{}{}
 	}
 
 	for i := range tasks {
@@ -79,22 +92,44 @@ func applyFlattenMapping(tasks []transferTask, targetRoot string) error {
 	return nil
 }
 
+func targetConflictKey(task transferTask) string {
+	if task.isUpload {
+		return path.Clean(task.remotePath)
+	}
+
+	key := filepath.ToSlash(filepath.Clean(task.localPath))
+	if runtime.GOOS == "windows" || runtime.GOOS == "darwin" {
+		key = strings.ToLower(key)
+	}
+	return key
+}
+
 func validateTargetCollisions(tasks []transferTask) error {
-	seen := make(map[string]struct{}, len(tasks))
+	seen := make(map[string]string, len(tasks))
 	for _, task := range tasks {
-		target := path.Clean(task.remotePath)
-		if !task.isUpload {
-			target = filepath.Clean(task.localPath)
-			if runtime.GOOS == "windows" || runtime.GOOS == "darwin" {
-				target = strings.ToLower(target)
+		target := targetConflictKey(task)
+		if original, exists := seen[target]; exists {
+			return fmt.Errorf("duplicate target path in transfer plan: %s conflicts with %s", original, taskTargetPath(task))
+		}
+		seen[target] = taskTargetPath(task)
+	}
+
+	for key, original := range seen {
+		for ancestor := path.Dir(key); ancestor != "." && ancestor != "/" && ancestor != key; ancestor = path.Dir(ancestor) {
+			if parent, exists := seen[ancestor]; exists {
+				return fmt.Errorf("target path conflict in transfer plan: %s conflicts with descendant %s", parent, original)
 			}
 		}
-		if _, exists := seen[target]; exists {
-			return fmt.Errorf("duplicate target path in transfer plan: %s", target)
-		}
-		seen[target] = struct{}{}
 	}
+
 	return nil
+}
+
+func taskTargetPath(task transferTask) string {
+	if task.isUpload {
+		return path.Clean(task.remotePath)
+	}
+	return filepath.Clean(task.localPath)
 }
 
 func ensureLocalDirsExist(tasks []transferTask) error {
@@ -113,22 +148,93 @@ func ensureLocalDirsExist(tasks []transferTask) error {
 	return nil
 }
 
-func trimLeadingParentSegments(p string) string {
-	for p == ".." || strings.HasPrefix(p, "../") {
-		p = strings.TrimPrefix(p, "../")
-	}
-	return strings.TrimPrefix(p, "./")
-}
-
 func sanitizeSlashRelativePath(p string) string {
 	p = strings.ReplaceAll(p, "\\", "/")
 	p = path.Clean(p)
-	p = strings.TrimLeft(p, "/")
-	p = trimLeadingParentSegments(p)
-	if p == "" || p == "." {
+	if p == "" || p == "." || p == "/" {
 		return ""
 	}
-	return p
+	if strings.HasPrefix(p, "/") {
+		return strings.TrimLeft(p, "/")
+	}
+
+	parentCount := 0
+	for p == ".." || strings.HasPrefix(p, "../") {
+		parentCount++
+		p = strings.TrimPrefix(p, "../")
+	}
+	if p == "" || p == "." {
+		if parentCount == 0 {
+			return ""
+		}
+		p = ""
+	}
+	if parentCount == 0 {
+		return strings.TrimPrefix(p, "./")
+	}
+
+	parts := make([]string, 0, parentCount+1)
+	for i := 0; i < parentCount; i++ {
+		parts = append(parts, preserveParentMarker)
+	}
+	if p != "" {
+		parts = append(parts, strings.TrimPrefix(p, "./"))
+	}
+	return path.Join(parts...)
+}
+
+func resolvedRemoteBaseName(resolvedSource string) string {
+	base := path.Base(path.Clean(resolvedSource))
+	if base == "/" || base == "." {
+		return ""
+	}
+	return base
+}
+
+func resolvedLocalBaseName(resolvedSource string) string {
+	base := filepath.Base(filepath.Clean(resolvedSource))
+	if base == string(filepath.Separator) || base == "." {
+		return ""
+	}
+	return base
+}
+
+func sanitizeLocalVolume(volume string) string {
+	volume = strings.ReplaceAll(volume, "\\", "/")
+	volume = strings.TrimSuffix(volume, ":")
+	volume = strings.Trim(volume, "/")
+	if volume == "" {
+		return ""
+	}
+	return preserveMetaPrefix + "volume_" + strings.ToLower(volume) + "__"
+}
+
+func usesReservedPreservePrefix(source string, isLocal bool) bool {
+	if source == "" || source == "~" {
+		return false
+	}
+
+	cleaned := source
+	if isLocal {
+		volume := filepath.VolumeName(cleaned)
+		if volume != "" {
+			return false
+		}
+	}
+	cleaned = strings.ReplaceAll(cleaned, "\\", "/")
+	if strings.HasPrefix(cleaned, "~/") {
+		cleaned = cleaned[2:]
+	}
+	cleaned = strings.TrimLeft(path.Clean(cleaned), "/")
+	if cleaned == "" || cleaned == "." || cleaned == ".." {
+		return false
+	}
+	for _, segment := range strings.Split(cleaned, "/") {
+		if strings.HasPrefix(segment, preserveMetaPrefix) {
+			return true
+		}
+	}
+	return false
 }
 
 func explicitRemoteFilePreservePath(source, resolvedSource string) string {
@@ -137,19 +243,17 @@ func explicitRemoteFilePreservePath(source, resolvedSource string) string {
 		if rel != "" {
 			return rel
 		}
+		return resolvedRemoteBaseName(resolvedSource)
 	}
 	if source == "~" {
-		rel := sanitizeSlashRelativePath(resolvedSource)
-		if rel != "" {
-			return rel
-		}
+		return resolvedRemoteBaseName(resolvedSource)
 	}
 
 	rel := sanitizeSlashRelativePath(source)
 	if rel != "" {
 		return rel
 	}
-	return path.Base(path.Clean(source))
+	return resolvedRemoteBaseName(resolvedSource)
 }
 
 func explicitLocalFilePreservePath(source, resolvedSource string) string {
@@ -158,29 +262,30 @@ func explicitLocalFilePreservePath(source, resolvedSource string) string {
 		if rel != "" {
 			return rel
 		}
+		return resolvedLocalBaseName(resolvedSource)
 	}
 	if source == "~" {
-		cleanedResolved := filepath.Clean(resolvedSource)
-		volume := filepath.VolumeName(cleanedResolved)
-		if volume != "" {
-			cleanedResolved = strings.TrimPrefix(cleanedResolved, volume)
-		}
-		rel := sanitizeSlashRelativePath(filepath.ToSlash(cleanedResolved))
-		if rel != "" {
-			return rel
-		}
+		return resolvedLocalBaseName(resolvedSource)
 	}
 
 	cleaned := filepath.Clean(source)
 	volume := filepath.VolumeName(cleaned)
-	if volume != "" {
-		cleaned = strings.TrimPrefix(cleaned, volume)
-	}
-	rel := sanitizeSlashRelativePath(filepath.ToSlash(cleaned))
+	rel := sanitizeSlashRelativePath(filepath.ToSlash(strings.TrimPrefix(cleaned, volume)))
+	volumePrefix := sanitizeLocalVolume(volume)
 	if rel != "" {
+		if volumePrefix != "" {
+			return path.Join(volumePrefix, rel)
+		}
 		return rel
 	}
-	return path.Base(filepath.ToSlash(cleaned))
+	base := resolvedLocalBaseName(resolvedSource)
+	if volumePrefix != "" {
+		if base == "" {
+			return volumePrefix
+		}
+		return path.Join(volumePrefix, base)
+	}
+	return base
 }
 
 // DefaultTransferOptions 返回默认传输选项

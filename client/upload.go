@@ -154,6 +154,9 @@ func (c *Client) UploadSources(localSources []string, remoteDir string, opts *Up
 }
 
 func (c *Client) collectUploadSourceTasks(source, remoteDir string, opts *UploadOptions, sourceCount int) ([]transferTask, error) {
+	if sourceCount > 1 && !opts.Flatten && usesReservedPreservePrefix(source, true) {
+		return nil, fmt.Errorf("source path uses reserved preserve prefix: %s", source)
+	}
 	if strings.ContainsAny(source, "*?[]") {
 		return c.collectUploadGlobTasks(source, remoteDir, opts)
 	}
@@ -170,7 +173,7 @@ func (c *Client) collectUploadSourceTasks(source, remoteDir string, opts *Upload
 		}
 		dirRoot := remoteDir
 		if sourceCount > 1 {
-			dirRoot = path.Join(remoteDir, path.Base(filepath.ToSlash(resolvedSource)))
+			dirRoot = path.Join(remoteDir, explicitLocalFilePreservePath(source, resolvedSource))
 		}
 		tasks, err := c.collectUploadTasks(resolvedSource, dirRoot, opts.MaxDepth, 0)
 		if err != nil {

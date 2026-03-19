@@ -58,6 +58,13 @@ The current bugs come from one root cause: destination mapping rules are impleme
 
 This is intentionally a hardening change, not a rewrite. We keep the explicit syntax and temporary compatibility mode from the previous spec, but tighten the boundary contract (`--`, strict `--name` validation), define preserve semantics for all source shapes, and back the behavior with targeted regression tests and a runtime scenario matrix.
 
+### Review Amendments
+
+- Review feedback after the first hardening round expanded collision validation from exact duplicates to full target-namespace validation: exact duplicate targets and file-vs-directory prefix conflicts now both fail in preflight.
+- Multi-source explicit directory operands follow the same operand-relative preserve rule as multi-source explicit files; same-basename directories from different parents must no longer collapse into one target tree.
+- Case comparison policy is now explicit: local download targets use Windows/macOS case-insensitive comparison, while other namespaces default to case-sensitive comparison.
+- Parent-relative explicit operands stay within the target root by encoding leading `..` segments into reserved `__my_sftp_parent__` preserve-path markers rather than silently collapsing them.
+
 ### Key Design
 #### Interface Contract
 
@@ -94,10 +101,14 @@ Preserve-path rules:
 3. Multiple explicit file sources
    - preserve the operand-relative path, not just basename
    - `get a/x.txt b/y.txt -d out` -> out/a/x.txt, out/b/y.txt
+   - leading `..` segments are preserved inside the target root as reserved `__my_sftp_parent__` path markers
 
 4. Directory sources with `-r`
    - single directory source keeps current ergonomic behavior: preserve contents under target root
-   - multiple directory sources preserve each source directory basename to avoid namespace collapse
+   - multiple directory sources preserve each operand-relative source path to avoid namespace collapse
+
+5. Absolute Windows local sources in multi-source preserve mode
+   - preserve the source path under a reserved leading `__my_sftp_volume_<drive>__` segment so different drive roots cannot collapse into one target tree
 
 5. Glob sources
    - preserve path relative to the static prefix before the first wildcard
@@ -112,6 +123,8 @@ Preserve-path rules:
   explicit files, directory recursion, or glob expansion
 - any duplicate basename is a hard error before transfer starts
 - hint text remains actionable: remove `--flatten` or narrow the source set
+- preserve mode also validates final target paths before any side effect; exact duplicate targets and
+  file-vs-directory prefix conflicts are both hard errors
 ```
 
 This means `--flatten` must behave identically for:
@@ -157,4 +170,5 @@ Constraint: `.sspec` status and verification notes must match actual runtime val
 | `client/*_test.go` or `shell/*_test.go` | Add regression tests for mapping and parser edge cases introduced by the explicit grammar |
 | `README.md` | Clarify preserve semantics, `--` usage, and flatten guarantees |
 | `README.zh.md` | Clarify preserve semantics, `--` usage, and flatten guarantees |
+| `.sspec/spec-docs/sftp-transfer.md` | Align long-lived transfer behavior notes with the hardened preflight collision contract |
 | `.sspec/changes/26-03-19T14-34_transfer-contract-hardening/handover.md` | Record audit-derived rationale and remaining verification steps |
