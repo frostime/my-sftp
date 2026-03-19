@@ -37,6 +37,27 @@ cd my-sftp
 go build -o my-sftp main.go
 ```
 
+## ✅ Is this project worth downloading locally?
+
+**Short answer**: Yes—if you want a significantly better interactive SFTP CLI experience (especially on Windows), this project is useful in practice. If you need enterprise-grade automation and reliability features (resume, retries, full audit logging), treat it as a productivity tool rather than critical infrastructure.
+
+### Good fit (recommended)
+
+- You frequently transfer files manually and want a more ergonomic CLI (TAB completion, history, progress bars).
+- You need batch-friendly manual operations (concurrent transfer, glob patterns, recursive `-r`).
+- You already use SSH config (`~/.ssh/config`) and want quick host-based connections.
+
+### Evaluate first (may not fit)
+
+- You require non-interactive script/CI workflow as the primary mode.
+- You need enterprise-grade transfer guarantees (resume, automatic retry, full observability).
+- You expect high automated test coverage across all modules (current coverage is strongest in `client/` and `shell/`).
+
+### Current quality and usability snapshot
+
+- **Strengths**: clear layered architecture (`main`/`shell`/`client`/`config`/`completer`), cross-platform path handling, concurrent transfer engine with visible progress, SSH config friendliness.
+- **Current boundary**: some capabilities are still oriented toward practical day-to-day CLI usage rather than strict production-platform requirements.
+
 ## 🚀 Quick Start
 
 ### Connecting to Server
