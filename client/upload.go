@@ -99,8 +99,24 @@ func (c *Client) UploadGlob(pattern, remotePath string, opts *UploadOptions) (in
 	// 解析 glob 模式
 	basePath := c.localWorkDir
 	fullPattern := pattern
+	var globBase string
 	if !filepath.IsAbs(pattern) {
 		fullPattern = filepath.Join(basePath, pattern)
+		// 对于相对 pattern，从原始 pattern 计算 globBase 以保留目录结构
+		globBase = localGlobBase(pattern)
+	} else {
+		globBase = localGlobBase(fullPattern)
+	}
+	globBaseAbs := globBase
+	globBasePrefix := ""
+	if !filepath.IsAbs(pattern) {
+		if globBase == "/" || globBase == "\\" {
+			globBase = "."
+		}
+		globBaseAbs = filepath.Clean(filepath.Join(basePath, globBase))
+		if globBase != "." {
+			globBasePrefix = filepath.ToSlash(globBase)
+		}
 	}
 
 	// 使用 doublestar 支持 ** 递归匹配
@@ -108,7 +124,6 @@ func (c *Client) UploadGlob(pattern, remotePath string, opts *UploadOptions) (in
 	if err != nil {
 		return 0, fmt.Errorf("glob pattern: %w", err)
 	}
-	globBase := localGlobBase(fullPattern)
 
 	if len(matches) == 0 {
 		return 0, fmt.Errorf("no files match pattern: %s", pattern)
@@ -131,11 +146,22 @@ func (c *Client) UploadGlob(pattern, remotePath string, opts *UploadOptions) (in
 			// 递归收集目录内的文件
 			remoteSubDir := remotePath
 			if !opts.Flatten {
-				rel, relErr := filepath.Rel(globBase, match)
-				if relErr == nil && rel != "." {
-					remoteSubDir = path.Join(remotePath, filepath.ToSlash(rel))
-				} else {
-					remoteSubDir = path.Join(remotePath, filepath.Base(match))
+				rel, relErr := filepath.Rel(globBaseAbs, match)
+				if relErr == nil {
+					relSlash := filepath.ToSlash(rel)
+					if relSlash != "." {
+						mapped := relSlash
+						if globBasePrefix != "" {
+							mapped = path.Join(globBasePrefix, relSlash)
+						}
+						remoteSubDir = path.Join(remotePath, mapped)
+					} else {
+						mapped := filepath.Base(match)
+						if globBasePrefix != "" {
+							mapped = path.Join(globBasePrefix, mapped)
+						}
+						remoteSubDir = path.Join(remotePath, mapped)
+					}
 				}
 			}
 			subTasks, err := c.collectUploadTasks(match, remoteSubDir, opts.MaxDepth, 0)
@@ -146,9 +172,18 @@ func (c *Client) UploadGlob(pattern, remotePath string, opts *UploadOptions) (in
 		} else {
 			remoteFile := path.Join(remotePath, filepath.Base(match))
 			if !opts.Flatten {
-				rel, relErr := filepath.Rel(globBase, match)
+				rel, relErr := filepath.Rel(globBaseAbs, match)
 				if relErr == nil {
-					remoteFile = path.Join(remotePath, filepath.ToSlash(rel))
+					relSlash := filepath.ToSlash(rel)
+					if relSlash != "." {
+						mapped := relSlash
+						if globBasePrefix != "" {
+							mapped = path.Join(globBasePrefix, relSlash)
+						}
+						remoteFile = path.Join(remotePath, mapped)
+					} else if globBasePrefix != "" {
+						remoteFile = path.Join(remotePath, path.Join(globBasePrefix, filepath.Base(match)))
+					}
 				}
 			}
 			tasks = append(tasks, transferTask{
@@ -321,7 +356,7 @@ func validateFlattenUploadCollisions(tasks []transferTask) error {
 	for _, task := range tasks {
 		base := filepath.Base(task.localPath)
 		if _, exists := seen[base]; exists {
-			return fmt.Errorf("duplicate basename in --flatten mode: %s", base)
+			return fmt.Errorf("duplicate basename in --flatten mode: %s\nHint: remove --flatten or narrow source set", base)
 		}
 		seen[base] = struct{}{}
 	}

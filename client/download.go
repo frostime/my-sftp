@@ -157,10 +157,25 @@ func (c *Client) DownloadGlob(pattern, localPath string, opts *DownloadOptions) 
 	// 解析 glob 模式的基路径
 	basePath := c.workDir
 	fullPattern := pattern
+	var globBase string
 	if !path.IsAbs(pattern) {
 		fullPattern = path.Join(basePath, pattern)
+		// 对于相对 pattern，从原始 pattern 计算 globBase 以保留目录结构
+		globBase = remoteGlobBase(pattern)
+	} else {
+		globBase = remoteGlobBase(fullPattern)
 	}
-	globBase := remoteGlobBase(fullPattern)
+	globBaseAbs := globBase
+	globBasePrefix := ""
+	if !path.IsAbs(pattern) {
+		if globBase == "/" {
+			globBase = "."
+		}
+		globBaseAbs = path.Clean(path.Join(basePath, globBase))
+		if globBase != "." {
+			globBasePrefix = globBase
+		}
+	}
 
 	// 查找匹配的远程文件
 	matches, err := c.globRemote(fullPattern)
@@ -193,11 +208,19 @@ func (c *Client) DownloadGlob(pattern, localPath string, opts *DownloadOptions) 
 			// 递归收集目录内的文件
 			localSubDir := localPath
 			if !opts.Flatten {
-				rel := remoteRelativePath(globBase, match)
+				rel := remoteRelativePath(globBaseAbs, match)
 				if rel != "." {
-					localSubDir = filepath.Join(localPath, filepath.FromSlash(rel))
+					mapped := rel
+					if globBasePrefix != "" {
+						mapped = path.Join(globBasePrefix, rel)
+					}
+					localSubDir = filepath.Join(localPath, filepath.FromSlash(mapped))
 				} else {
-					localSubDir = filepath.Join(localPath, path.Base(match))
+					mapped := path.Base(match)
+					if globBasePrefix != "" {
+						mapped = path.Join(globBasePrefix, mapped)
+					}
+					localSubDir = filepath.Join(localPath, filepath.FromSlash(mapped))
 				}
 			}
 			if err := os.MkdirAll(localSubDir, 0755); err != nil {
@@ -211,9 +234,15 @@ func (c *Client) DownloadGlob(pattern, localPath string, opts *DownloadOptions) 
 		} else {
 			localFile := filepath.Join(localPath, path.Base(match))
 			if !opts.Flatten {
-				rel := remoteRelativePath(globBase, match)
-				if rel != "" {
-					localFile = filepath.Join(localPath, filepath.FromSlash(rel))
+				rel := remoteRelativePath(globBaseAbs, match)
+				if rel != "" && rel != "." {
+					mapped := rel
+					if globBasePrefix != "" {
+						mapped = path.Join(globBasePrefix, rel)
+					}
+					localFile = filepath.Join(localPath, filepath.FromSlash(mapped))
+				} else if globBasePrefix != "" {
+					localFile = filepath.Join(localPath, filepath.FromSlash(path.Join(globBasePrefix, path.Base(match))))
 				}
 			}
 			tasks = append(tasks, transferTask{
@@ -274,7 +303,7 @@ func validateFlattenDownloadCollisions(tasks []transferTask) error {
 	for _, task := range tasks {
 		base := filepath.Base(task.localPath)
 		if _, exists := seen[base]; exists {
-			return fmt.Errorf("duplicate basename in --flatten mode: %s", base)
+			return fmt.Errorf("duplicate basename in --flatten mode: %s\nHint: remove --flatten or narrow source set", base)
 		}
 		seen[base] = struct{}{}
 	}

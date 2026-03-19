@@ -622,9 +622,9 @@ func (s *Shell) cmdPut(args []string) error {
 			totalCount += count
 		} else {
 			// 上传单个文件
-			targetPath := remoteDir
-			if len(localPaths) > 1 || opts.targetDir != "" {
-				targetPath = path.Join(remoteDir, filepath.Base(localPath))
+			targetPath := path.Join(remoteDir, filepath.Base(localPath))
+			if len(localPaths) == 1 && opts.targetDir == "" && opts.rename == "" {
+				targetPath = remoteDir
 			}
 			if opts.rename != "" {
 				targetPath = path.Join(remoteDir, opts.rename)

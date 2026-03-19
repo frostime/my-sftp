@@ -1,6 +1,6 @@
 # Handover: unambiguous-transfer-syntax
 
-**Updated**: 2026-03-19T02:12+08:00
+**Updated**: 2026-03-19T14:09+08:00
 
 ---
 
@@ -48,6 +48,9 @@ If something becomes obsolete, mark it as obsolete with a timestamp instead of d
  - [2026-03-19T02:01+08:00] [Constraint] Full end-to-end transfer regression needs a reachable SFTP server; current session verified compile/build only.
  - [2026-03-19T02:12+08:00] [Risk] Round-1 audit identified critical deviations (glob preserve-structure base and flatten hint text) tracked in `round1-deviation.md`.
  - [2026-03-19T02:12+08:00] [Decision] Commit executed by explicit user instruction with known deviations documented for next round.
+ - [2026-03-19T14:09+08:00] [VitalFinding] Round-1 critical deviations were reproducible in code and fixed in Round-2 for glob preserve mapping and flatten hint text.
+ - [2026-03-19T14:09+08:00] [Decision] `cmdPut` single-file/no-destination branch was made intent-symmetric with `cmdGet` while preserving runtime behavior.
+ - [2026-03-19T14:09+08:00] [VerificationShortcut] Use `go build -o my-sftp.tmp.exe` if `my-sftp.exe` is locked by running process.
 <!-- Promote only facts still useful after the current batch ends.
 Single/sub change preferred types: Alignment, Decision, VitalFinding, Constraint, Risk, VerificationShortcut.
 Use a custom type only when none fit well; keep it short and clear.
@@ -63,6 +66,22 @@ Header format:
 
 Tags are freeform but must be readable. Examples: work-log, user-feedback, argue, risk.
 Any user interaction (feedback, @align, @argue) MUST start a new log entry. -->
+
+### 2026-03-19T14:09+08:00 [user-feedback] round-2 remediation for audit deviations
+
+**Accomplished**
+- Re-checked `round1-deviation.md` findings against implementation and confirmed the three listed issues existed at code level.
+- Fixed preserve-structure glob base mapping in `client/download.go` and `client/upload.go`, including relative-pattern edge cases.
+- Added flatten collision remediation hint text in both `validateFlattenDownloadCollisions` and `validateFlattenUploadCollisions`.
+- Aligned `shell/shell.go` `cmdPut` single-file/no-destination branch with `cmdGet` intent for maintainability consistency.
+- Verified no diagnostics via workspace problems scan and successful build with `go build -o my-sftp.tmp.exe`.
+
+**Next**
+- Run full E2E transfer scenario matrix against a real SFTP server for Phase 4 closure.
+- Update change status in `spec.md` once runtime matrix is fully completed.
+
+**Notes** (optional)
+- `go build -o my-sftp.exe` can fail when output binary is in use; alternate output file avoids false-negative build status.
 
 ### <ISO timestamp> [tag] <short title>
 
