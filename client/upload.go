@@ -235,18 +235,26 @@ func (c *Client) collectUploadGlobTasks(pattern, remotePath string, opts *Upload
 		return nil, fmt.Errorf("no files match pattern: %s", pattern)
 	}
 
-	// 收集所有上传任务
-	var tasks []transferTask
+	entries := make([]transferSourceEntry, 0, len(matches))
 	for _, match := range matches {
 		stat, err := os.Stat(match)
 		if err != nil {
 			return nil, fmt.Errorf("stat match %s: %w", match, err)
 		}
+		entries = append(entries, transferSourceEntry{
+			path:  match,
+			isDir: stat.IsDir(),
+			size:  stat.Size(),
+		})
+	}
+	entries = normalizeMatchedSourceEntries(entries, true, opts.Recursive)
 
-		if stat.IsDir() {
-			if !opts.Recursive {
-				continue // 非递归模式跳过目录
-			}
+	// 收集所有上传任务
+	var tasks []transferTask
+	for _, entry := range entries {
+		match := entry.path
+
+		if entry.isDir {
 			// 递归收集目录内的文件
 			mapped, relErr := filepath.Rel(globBaseAbs, match)
 			if relErr != nil {
@@ -270,7 +278,7 @@ func (c *Client) collectUploadGlobTasks(pattern, remotePath string, opts *Upload
 				localPath:  match,
 				remotePath: remoteFile,
 				isUpload:   true,
-				size:       stat.Size(),
+				size:       entry.size,
 			})
 		}
 	}

@@ -185,6 +185,55 @@ func TestDedupeResolvedSourceTasks(t *testing.T) {
 	}
 }
 
+func TestNormalizeMatchedSourceEntriesGlobstarOverlapUpload(t *testing.T) {
+	entries := []transferSourceEntry{
+		{path: filepath.Join("local", "dir"), isDir: true},
+		{path: filepath.Join("local", "dir", "nested"), isDir: true},
+		{path: filepath.Join("local", "dir", "root.txt"), isDir: false},
+		{path: filepath.Join("local", "dir", "nested", "child.txt"), isDir: false},
+	}
+
+	normalized := normalizeMatchedSourceEntries(entries, true, true)
+	if len(normalized) != 1 {
+		t.Fatalf("normalizeMatchedSourceEntries() len = %d, want 1", len(normalized))
+	}
+	if !normalized[0].isDir || filepath.Clean(normalized[0].path) != filepath.Join("local", "dir") {
+		t.Fatalf("normalizeMatchedSourceEntries() = %#v", normalized)
+	}
+}
+
+func TestNormalizeMatchedSourceEntriesGlobstarOverlapDownload(t *testing.T) {
+	entries := []transferSourceEntry{
+		{path: "/remote/dir", isDir: true},
+		{path: "/remote/dir/nested", isDir: true},
+		{path: "/remote/dir/root.txt", isDir: false},
+		{path: "/remote/dir/nested/child.txt", isDir: false},
+	}
+
+	normalized := normalizeMatchedSourceEntries(entries, false, true)
+	if len(normalized) != 1 {
+		t.Fatalf("normalizeMatchedSourceEntries() len = %d, want 1", len(normalized))
+	}
+	if !normalized[0].isDir || path.Clean(normalized[0].path) != "/remote/dir" {
+		t.Fatalf("normalizeMatchedSourceEntries() = %#v", normalized)
+	}
+}
+
+func TestNormalizeMatchedSourceEntriesNonRecursiveKeepsFilesOnly(t *testing.T) {
+	entries := []transferSourceEntry{
+		{path: filepath.Join("local", "dir"), isDir: true},
+		{path: filepath.Join("local", "dir", "root.txt"), isDir: false},
+	}
+
+	normalized := normalizeMatchedSourceEntries(entries, true, false)
+	if len(normalized) != 1 {
+		t.Fatalf("normalizeMatchedSourceEntries() len = %d, want 1", len(normalized))
+	}
+	if normalized[0].isDir || filepath.Clean(normalized[0].path) != filepath.Join("local", "dir", "root.txt") {
+		t.Fatalf("normalizeMatchedSourceEntries() = %#v", normalized)
+	}
+}
+
 func TestCollectUploadGlobTasksDedupesGlobstarDirectoryMatches(t *testing.T) {
 	root := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(root, "dir", "nested"), 0755); err != nil {

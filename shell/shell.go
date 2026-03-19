@@ -430,6 +430,26 @@ func validateTransferRename(name string) error {
 	return nil
 }
 
+func buildDownloadCommandOptions(parsed *transferCLIOptions) *client.DownloadOptions {
+	return &client.DownloadOptions{
+		Recursive:    parsed.recursive,
+		ShowProgress: true,
+		Concurrency:  client.MaxConcurrentTransfers,
+		Flatten:      parsed.flatten,
+		MaxDepth:     -1,
+	}
+}
+
+func buildUploadCommandOptions(parsed *transferCLIOptions) *client.UploadOptions {
+	return &client.UploadOptions{
+		Recursive:    parsed.recursive,
+		ShowProgress: true,
+		Concurrency:  client.MaxConcurrentTransfers,
+		Flatten:      parsed.flatten,
+		MaxDepth:     -1,
+	}
+}
+
 func (s *Shell) inferLegacyGetTarget(remotePaths []string) ([]string, string, bool) {
 	if len(remotePaths) <= 1 {
 		return remotePaths, "", false
@@ -516,12 +536,7 @@ func (s *Shell) cmdGet(args []string) error {
 		}
 		totalCount = 1
 	} else {
-		count, err := s.client.DownloadSources(remotePaths, localDir, &client.DownloadOptions{
-			Recursive:    opts.recursive,
-			ShowProgress: true,
-			Concurrency:  client.MaxConcurrentTransfers,
-			Flatten:      opts.flatten,
-		})
+		count, err := s.client.DownloadSources(remotePaths, localDir, buildDownloadCommandOptions(opts))
 		if err != nil {
 			return err
 		}
@@ -592,12 +607,7 @@ func (s *Shell) cmdPut(args []string) error {
 		}
 		totalCount = 1
 	} else {
-		count, err := s.client.UploadSources(localPaths, remoteDir, &client.UploadOptions{
-			Recursive:    opts.recursive,
-			ShowProgress: true,
-			Concurrency:  client.MaxConcurrentTransfers,
-			Flatten:      opts.flatten,
-		})
+		count, err := s.client.UploadSources(localPaths, remoteDir, buildUploadCommandOptions(opts))
 		if err != nil {
 			return err
 		}

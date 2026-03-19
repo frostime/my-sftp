@@ -1,6 +1,10 @@
 package shell
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/frostime/my-sftp/client"
+)
 
 func TestParseTransferCLIArgsSupportsDashLeadingSourceWithTerminator(t *testing.T) {
 	opts, err := parseTransferCLIArgs([]string{"-d", "out", "--", "-report.txt"})
@@ -60,5 +64,35 @@ func TestValidateTransferRename(t *testing.T) {
 				t.Fatalf("validateTransferRename(%q) error = %v", tt.rename, err)
 			}
 		})
+	}
+}
+
+func TestBuildDownloadCommandOptions(t *testing.T) {
+	parsed := &transferCLIOptions{recursive: true, flatten: true}
+	got := buildDownloadCommandOptions(parsed)
+	want := &client.DownloadOptions{
+		Recursive:    true,
+		ShowProgress: true,
+		Concurrency:  client.MaxConcurrentTransfers,
+		Flatten:      true,
+		MaxDepth:     -1,
+	}
+	if *got != *want {
+		t.Fatalf("buildDownloadCommandOptions() = %#v, want %#v", *got, *want)
+	}
+}
+
+func TestBuildUploadCommandOptions(t *testing.T) {
+	parsed := &transferCLIOptions{recursive: true, flatten: true}
+	got := buildUploadCommandOptions(parsed)
+	want := &client.UploadOptions{
+		Recursive:    true,
+		ShowProgress: true,
+		Concurrency:  client.MaxConcurrentTransfers,
+		Flatten:      true,
+		MaxDepth:     -1,
+	}
+	if *got != *want {
+		t.Fatalf("buildUploadCommandOptions() = %#v, want %#v", *got, *want)
 	}
 }

@@ -43,6 +43,12 @@ type transferTask struct {
 	size       int64  // 文件大小，用于进度显示
 }
 
+type transferSourceEntry struct {
+	path  string
+	isDir bool
+	size  int64
+}
+
 // TransferOptions 统一的传输选项
 type TransferOptions struct {
 	Recursive    bool // 递归处理目录
@@ -336,6 +342,76 @@ func dedupeResolvedSourceTasks(tasks []transferTask) []transferTask {
 		deduped = append(deduped, task)
 	}
 	return deduped
+}
+
+func normalizeMatchedSourceEntries(entries []transferSourceEntry, isLocal, recursive bool) []transferSourceEntry {
+	if len(entries) == 0 {
+		return nil
+	}
+
+	normalized := make([]transferSourceEntry, 0, len(entries))
+	selectedDirs := make([]string, 0, len(entries))
+	seen := make(map[string]struct{}, len(entries))
+
+	sort.Slice(entries, func(i, j int) bool {
+		left := normalizedSourcePath(entries[i].path, isLocal)
+		right := normalizedSourcePath(entries[j].path, isLocal)
+		leftDepth := strings.Count(left, "/")
+		rightDepth := strings.Count(right, "/")
+		if leftDepth != rightDepth {
+			return leftDepth < rightDepth
+		}
+		return left < right
+	})
+
+	for _, entry := range entries {
+		entry.path = cleanedSourcePath(entry.path, isLocal)
+		key := normalizedSourcePath(entry.path, isLocal)
+		if _, exists := seen[key]; exists {
+			continue
+		}
+		seen[key] = struct{}{}
+
+		if hasSelectedAncestorDir(key, selectedDirs) {
+			continue
+		}
+
+		if entry.isDir {
+			if !recursive {
+				continue
+			}
+			selectedDirs = append(selectedDirs, key)
+		}
+
+		normalized = append(normalized, entry)
+	}
+
+	return normalized
+}
+
+func cleanedSourcePath(source string, isLocal bool) string {
+	if isLocal {
+		return filepath.Clean(source)
+	}
+	return path.Clean(source)
+}
+
+func normalizedSourcePath(source string, isLocal bool) string {
+	cleaned := cleanedSourcePath(source, isLocal)
+	if isLocal {
+		return filepath.ToSlash(cleaned)
+	}
+	return cleaned
+}
+
+func hasSelectedAncestorDir(source string, selectedDirs []string) bool {
+	for _, dir := range selectedDirs {
+		prefix := dir + "/"
+		if strings.HasPrefix(source, prefix) {
+			return true
+		}
+	}
+	return false
 }
 
 // DefaultTransferOptions 返回默认传输选项
