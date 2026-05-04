@@ -1,7 +1,7 @@
 ---
 name: cli-usage
 description: "my-sftp 交互式 CLI 的使用规范，包括连接方式、命令分类、传输语法和路径约定"
-updated: 2026-03-19
+updated: 2026-05-05
 scope:
   - /main.go
   - /shell/**
@@ -14,15 +14,7 @@ scope:
 
 ## Overview
 
-本文档定义 `my-sftp` 的交互式 CLI 使用规范。它关注用户在命令行中看到和依赖的行为，包括：
-
-- 程序启动和连接方式
-- 交互式 shell 中的命令分类
-- `get` / `put` 的正式语法与约束
-- 本地/远端路径的解释规则
-- 兼容行为与错误边界
-
-目标是让 README、shell 实现、自动补全和未来文档都遵循同一套稳定约定。
+Defines the interactive CLI contract: connection model, command grammar, transfer syntax, path semantics, and error boundaries.
 
 ## Program Entry
 
@@ -482,9 +474,19 @@ put a.txt b.txt -d /srv/out --name merged.txt
 
 ## Documentation Rules
 
-当 README、帮助文本或后续 spec-doc 更新 CLI 示例时，应遵循：
+README、帮助文本、后续 spec-doc 的 CLI 示例必须：
 
-- 优先展示显式 `-d/--dir` 语法
-- 展示 `--` 处理 dash-leading source 的例子
-- 展示 preserve 与 `--flatten` 的区别
-- 如涉及 parent-relative source，应明确说明它们会被保留在目标根内部，而不是逃逸到目标根外
+- 优先展示 `-d/--dir` 显式语法
+- 展示 `--` 处理 dash-leading source
+- 展示 preserve vs `--flatten` 区别
+- 涉及 parent-relative source 时，说明它们保留在目标根内部
+
+## `--name` Implementation Note
+
+`--name` is **not** routed through `DownloadSources` / `UploadSources`. It is handled directly in `cmdGet` / `cmdPut` by calling `client.Download()` / `client.Upload()` — single file, no task collection, no `executeTasks`. This means:
+
+- `--name` bypasses the collision-check pipeline
+- `--name` bypasses the concurrency engine
+- `--name` still uses `ResolveRemotePath` / `ResolveLocalPath`
+
+If you add new pre-flight checks (e.g. pre-transfer disk-space check), you must decide whether `--name` should also run them or remain on its fast path.
