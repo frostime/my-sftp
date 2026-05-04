@@ -1,10 +1,9 @@
 ---
-created: 2026-05-05T01:31:45
-status: OPEN
-attach-change: null
-tldr: "Code review发现的bug、不对称行为和代码异味，需要新AGENT调研并决策"
+created: 2026-05-05 01:31:45
+status: DOING
+attach-change: .sspec/changes/26-05-05T02-06_templatetest/spec.md
+tldr: Code review发现的bug、不对称行为和代码异味，需要新AGENT调研并决策
 ---
-
 # Request: Bugs, Asymmetries, and Code Smells
 
 ## Background

@@ -1,0 +1,13 @@
+{
+  "rules": {
+    "bash": {
+      "command": [
+        {
+          "match": ["sftp"],
+          "type": "keyword",
+          "action": "allow"
+        }
+      ]
+    }
+  }
+}
