@@ -68,14 +68,49 @@ func (c *Completer) Do(line []rune, pos int) (newLine [][]rune, length int) {
 	}
 
 	cmd := fields[0]
+	hasTrailingSpace := strings.HasSuffix(text, " ")
+	optExpectValue := ""
+	if hasTrailingSpace {
+		if len(fields) > 1 {
+			prev := fields[len(fields)-1]
+			if prev == "-d" || prev == "--dir" || prev == "--name" {
+				optExpectValue = prev
+			}
+		}
+	} else {
+		if len(fields) > 2 {
+			prev := fields[len(fields)-2]
+			if prev == "-d" || prev == "--dir" || prev == "--name" {
+				optExpectValue = prev
+			}
+		}
+	}
 
 	switch cmd {
-	case "cd", "ls", "ll", "dir", "rm", "del", "delete", "rmdir", "rd", "stat", "info", "get", "download":
+	case "cd", "ls", "ll", "dir", "rm", "del", "delete", "rmdir", "rd", "stat", "info":
 		// 远程路径补全
 		return c.completeRemotePath(currentArg), len(currentArg)
-	case "put", "upload", "lcd", "lls", "ldir", "lmkdir":
+	case "lcd", "lls", "ldir", "lmkdir":
 		// 本地路径补全
 		return c.completeLocalPath(currentArg), len(currentArg)
+	case "get", "download":
+		switch optExpectValue {
+		case "-d", "--dir":
+			return c.completeLocalPath(currentArg), len(currentArg)
+		case "--name":
+			return nil, 0
+		default:
+			return c.completeRemotePath(currentArg), len(currentArg)
+		}
+	case "put", "upload":
+		switch optExpectValue {
+		case "-d", "--dir":
+			return c.completeRemotePath(currentArg), len(currentArg)
+		case "--name":
+			return nil, 0
+		default:
+			return c.completeLocalPath(currentArg), len(currentArg)
+		}
 	default:
 		return nil, 0
 	}

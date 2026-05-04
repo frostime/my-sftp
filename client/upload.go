@@ -6,6 +6,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"strings"
 
 	"github.com/bmatcuk/doublestar/v4"
 	"github.com/schollz/progressbar/v3"
@@ -55,6 +56,12 @@ func (c *Client) UploadWithProgress(localPath, remotePath string, globalBar *pro
 	if remoteStat, err := c.sftpClient.Stat(remotePath); err == nil && remoteStat.IsDir() {
 		remotePath = path.Join(remotePath, filepath.Base(localPath))
 	}
+	parent := path.Dir(remotePath)
+	if parent != "/" && parent != "." {
+		if err := c.ensureRemoteDir(parent); err != nil {
+			return fmt.Errorf("create remote dir: %w", err)
+		}
+	}
 
 	dstFile, err := c.sftpClient.Create(remotePath)
 	if err != nil {
@@ -81,11 +88,21 @@ type UploadOptions struct {
 	Recursive    bool // 递归上传目录
 	ShowProgress bool // 显示进度条
 	Concurrency  int  // 并发数
+	Flatten      bool // 扁平化目标路径
 	MaxDepth     int  // 最大递归深度：-1=无限, 0=仅当前目录, 1=一层子目录...
 }
 
 // UploadGlob 使用 glob 模式匹配上传文件
 func (c *Client) UploadGlob(pattern, remotePath string, opts *UploadOptions) (int, error) {
+	return c.UploadSources([]string{pattern}, remotePath, opts)
+}
+
+// UploadSources 上传一个或多个本地 source（显式路径或 glob）
+func (c *Client) UploadSources(localSources []string, remoteDir string, opts *UploadOptions) (int, error) {
+	if len(localSources) == 0 {
+		return 0, fmt.Errorf("missing source path")
+	}
+
 	if opts == nil {
 		opts = &UploadOptions{
 			ShowProgress: true,
@@ -94,57 +111,28 @@ func (c *Client) UploadGlob(pattern, remotePath string, opts *UploadOptions) (in
 		}
 	}
 
-	// 解析 glob 模式
-	basePath := c.localWorkDir
-	fullPattern := pattern
-	if !filepath.IsAbs(pattern) {
-		fullPattern = filepath.Join(basePath, pattern)
-	}
+	remoteDir = c.ResolveRemotePath(remoteDir)
 
-	// 使用 doublestar 支持 ** 递归匹配
-	matches, err := doublestar.FilepathGlob(fullPattern)
-	if err != nil {
-		return 0, fmt.Errorf("glob pattern: %w", err)
-	}
-
-	if len(matches) == 0 {
-		return 0, fmt.Errorf("no files match pattern: %s", pattern)
-	}
-
-	remotePath = c.ResolveRemotePath(remotePath)
-
-	// 收集所有上传任务
 	var tasks []transferTask
-	for _, match := range matches {
-		stat, err := os.Stat(match)
+	for _, source := range localSources {
+		sourceTasks, err := c.collectUploadSourceTasks(source, remoteDir, opts, len(localSources))
 		if err != nil {
-			continue
+			return 0, err
 		}
-
-		if stat.IsDir() {
-			if !opts.Recursive {
-				continue // 非递归模式跳过目录
-			}
-			// 递归收集目录内的文件
-			remoteSubDir := path.Join(remotePath, filepath.Base(match))
-			subTasks, err := c.collectUploadTasks(match, remoteSubDir, opts.MaxDepth, 0)
-			if err != nil {
-				return 0, fmt.Errorf("collect tasks for %s: %w", match, err)
-			}
-			tasks = append(tasks, subTasks...)
-		} else {
-			remoteFile := path.Join(remotePath, filepath.Base(match))
-			tasks = append(tasks, transferTask{
-				localPath:  match,
-				remotePath: remoteFile,
-				isUpload:   true,
-				size:       stat.Size(),
-			})
-		}
+		tasks = append(tasks, sourceTasks...)
 	}
 
 	if len(tasks) == 0 {
-		return 0, fmt.Errorf("no files to upload")
+		return 0, fmt.Errorf("no files found in directory")
+	}
+
+	if opts.Flatten {
+		if err := applyFlattenMapping(tasks, remoteDir); err != nil {
+			return 0, err
+		}
+	}
+	if err := validateTargetCollisions(tasks); err != nil {
+		return 0, err
 	}
 
 	fmt.Printf("Found %d file(s) to upload\n", len(tasks))
@@ -165,9 +153,49 @@ func (c *Client) UploadGlob(pattern, remotePath string, opts *UploadOptions) (in
 	return c.executeTasks(tasks, transferOpts)
 }
 
-// UploadDir 递归上传整个目录
-// 使用统一的任务收集+执行模式，避免并发嵌套
-func (c *Client) UploadDir(localDir, remoteDir string, opts *UploadOptions) (int, error) {
+func (c *Client) collectUploadSourceTasks(source, remoteDir string, opts *UploadOptions, sourceCount int) ([]transferTask, error) {
+	if sourceCount > 1 && !opts.Flatten && usesReservedPreservePrefix(source, true) {
+		return nil, fmt.Errorf("source path uses reserved preserve prefix: %s", source)
+	}
+	if strings.ContainsAny(source, "*?[]") {
+		return c.collectUploadGlobTasks(source, remoteDir, opts)
+	}
+
+	resolvedSource := c.ResolveLocalPath(source)
+	stat, err := os.Stat(resolvedSource)
+	if err != nil {
+		return nil, err
+	}
+
+	if stat.IsDir() {
+		if !opts.Recursive {
+			return nil, fmt.Errorf("%s is a directory, use 'put -r' for recursive upload", source)
+		}
+		dirRoot := remoteDir
+		if sourceCount > 1 {
+			dirRoot = path.Join(remoteDir, explicitLocalFilePreservePath(source, resolvedSource))
+		}
+		tasks, err := c.collectUploadTasks(resolvedSource, dirRoot, opts.MaxDepth, 0)
+		if err != nil {
+			return nil, fmt.Errorf("collect tasks for %s: %w", source, err)
+		}
+		return tasks, nil
+	}
+
+	remoteFile := path.Join(remoteDir, path.Base(filepath.ToSlash(resolvedSource)))
+	if sourceCount > 1 {
+		remoteFile = path.Join(remoteDir, explicitLocalFilePreservePath(source, resolvedSource))
+	}
+
+	return []transferTask{{
+		localPath:  resolvedSource,
+		remotePath: remoteFile,
+		isUpload:   true,
+		size:       stat.Size(),
+	}}, nil
+}
+
+func (c *Client) collectUploadGlobTasks(pattern, remotePath string, opts *UploadOptions) ([]transferTask, error) {
 	if opts == nil {
 		opts = &UploadOptions{
 			ShowProgress: true,
@@ -176,46 +204,104 @@ func (c *Client) UploadDir(localDir, remoteDir string, opts *UploadOptions) (int
 		}
 	}
 
-	localDir = c.ResolveLocalPath(localDir)
-	remoteDir = c.ResolveRemotePath(remoteDir)
+	// 解析 glob 模式
+	basePath := c.localWorkDir
+	fullPattern := pattern
+	var globBase string
+	if !filepath.IsAbs(pattern) {
+		fullPattern = filepath.Join(basePath, pattern)
+		// 对于相对 pattern，从原始 pattern 计算 globBase 以保留目录结构
+		globBase = localGlobBase(pattern)
+	} else {
+		globBase = localGlobBase(fullPattern)
+	}
+	globBaseAbs := globBase
+	globBasePrefix := ""
+	if !filepath.IsAbs(pattern) {
+		if globBase == "/" || globBase == "\\" {
+			globBase = "."
+		}
+		globBaseAbs = filepath.Clean(filepath.Join(basePath, globBase))
+		globBasePrefix = localGlobPreservePrefix(globBase, globBaseAbs)
+	}
 
-	// 检查本地目录
-	stat, err := os.Stat(localDir)
+	// 使用 doublestar 支持 ** 递归匹配
+	matches, err := doublestar.FilepathGlob(fullPattern)
+	if err != nil {
+		return nil, fmt.Errorf("glob pattern: %w", err)
+	}
+
+	if len(matches) == 0 {
+		return nil, fmt.Errorf("no files match pattern: %s", pattern)
+	}
+
+	entries := make([]transferSourceEntry, 0, len(matches))
+	for _, match := range matches {
+		stat, err := os.Stat(match)
+		if err != nil {
+			return nil, fmt.Errorf("stat match %s: %w", match, err)
+		}
+		entries = append(entries, transferSourceEntry{
+			path:  match,
+			isDir: stat.IsDir(),
+			size:  stat.Size(),
+		})
+	}
+	entries = normalizeMatchedSourceEntries(entries, true, opts.Recursive)
+
+	// 收集所有上传任务
+	var tasks []transferTask
+	for _, entry := range entries {
+		match := entry.path
+
+		if entry.isDir {
+			// 递归收集目录内的文件
+			mapped, relErr := filepath.Rel(globBaseAbs, match)
+			if relErr != nil {
+				return nil, fmt.Errorf("relative path for %s: %w", match, relErr)
+			}
+			mappedSlash := joinPreservePath(globBasePrefix, filepath.ToSlash(mapped))
+			remoteSubDir := path.Join(remotePath, mappedSlash)
+			subTasks, err := c.collectUploadTasks(match, remoteSubDir, opts.MaxDepth, 0)
+			if err != nil {
+				return nil, fmt.Errorf("collect tasks for %s: %w", match, err)
+			}
+			tasks = append(tasks, subTasks...)
+		} else {
+			mapped, relErr := filepath.Rel(globBaseAbs, match)
+			if relErr != nil {
+				return nil, fmt.Errorf("relative path for %s: %w", match, relErr)
+			}
+			mappedSlash := joinPreservePath(globBasePrefix, filepath.ToSlash(mapped))
+			remoteFile := path.Join(remotePath, mappedSlash)
+			tasks = append(tasks, transferTask{
+				localPath:  match,
+				remotePath: remoteFile,
+				isUpload:   true,
+				size:       entry.size,
+			})
+		}
+	}
+
+	if len(tasks) == 0 {
+		return nil, fmt.Errorf("no files to upload")
+	}
+
+	return dedupeResolvedSourceTasks(tasks), nil
+}
+
+// UploadDir 递归上传整个目录
+// 使用统一的任务收集+执行模式，避免并发嵌套
+func (c *Client) UploadDir(localDir, remoteDir string, opts *UploadOptions) (int, error) {
+	resolvedDir := c.ResolveLocalPath(localDir)
+	stat, err := os.Stat(resolvedDir)
 	if err != nil {
 		return 0, fmt.Errorf("stat local dir: %w", err)
 	}
 	if !stat.IsDir() {
-		return 0, fmt.Errorf("not a directory: %s", localDir)
+		return 0, fmt.Errorf("not a directory: %s", resolvedDir)
 	}
-
-	// 收集所有上传任务（不执行）
-	tasks, err := c.collectUploadTasks(localDir, remoteDir, opts.MaxDepth, 0)
-	if err != nil {
-		return 0, fmt.Errorf("collect upload tasks: %w", err)
-	}
-
-	if len(tasks) == 0 {
-		return 0, fmt.Errorf("no files found in directory")
-	}
-
-	fmt.Printf("Uploading directory with %d file(s)\n", len(tasks))
-
-	// 确保所有远程目录存在（包括根目录）
-	dirs := c.collectRemoteDirsForUpload(tasks)
-	// 添加根目录
-	dirs = append([]string{remoteDir}, dirs...)
-	if err := c.ensureRemoteDirsExist(dirs); err != nil {
-		return 0, fmt.Errorf("create remote dirs: %w", err)
-	}
-
-	// 使用统一执行引擎
-	transferOpts := &TransferOptions{
-		Recursive:    opts.Recursive,
-		ShowProgress: opts.ShowProgress,
-		Concurrency:  opts.Concurrency,
-		MaxDepth:     opts.MaxDepth,
-	}
-	return c.executeTasks(tasks, transferOpts)
+	return c.UploadSources([]string{localDir}, remoteDir, opts)
 }
 
 // ensureRemoteDir 确保远程目录存在
@@ -264,4 +350,24 @@ func (c *Client) ensureRemoteDir(dir string) error {
 	})
 
 	return err
+}
+
+func localGlobBase(pattern string) string {
+	cleaned := filepath.Clean(pattern)
+	parts := strings.Split(cleaned, string(filepath.Separator))
+	base := make([]string, 0, len(parts))
+	for i, part := range parts {
+		if i == 0 && strings.Contains(part, ":") {
+			base = append(base, part)
+			continue
+		}
+		if strings.ContainsAny(part, "*?[]") {
+			break
+		}
+		base = append(base, part)
+	}
+	if len(base) == 0 {
+		return filepath.Dir(cleaned)
+	}
+	return filepath.Clean(filepath.Join(base...))
 }
