@@ -3,6 +3,7 @@ package client
 import (
 	"fmt"
 	"io"
+	"log"
 	"os"
 	"path"
 	"path/filepath"
@@ -282,6 +283,71 @@ func (c *Client) invalidateDirCache(dir string) {
 	c.cacheMu.Lock()
 	delete(c.dirCache, dir)
 	c.cacheMu.Unlock()
+}
+
+// FormatSize formats bytes into human-readable form (binary units, 1 decimal).
+func FormatSize(bytes int64) string {
+	const unit = 1024
+	if bytes < unit {
+		return fmt.Sprintf("%d B", bytes)
+	}
+	div, exp := int64(unit), 0
+	for n := bytes / unit; n >= unit; n /= unit {
+		div *= unit
+		exp++
+	}
+	return fmt.Sprintf("%.1f %cB", float64(bytes)/float64(div), "KMGTPE"[exp])
+}
+
+// RemoveDir removes an empty remote directory.
+func (c *Client) RemoveDir(remotePath string) error {
+	remotePath = c.ResolveRemotePath(remotePath)
+	stat, err := c.sftpClient.Stat(remotePath)
+	if err != nil {
+		return fmt.Errorf("stat: %w", err)
+	}
+	if !stat.IsDir() {
+		return fmt.Errorf("not a directory: %s", remotePath)
+	}
+	err = c.sftpClient.RemoveDirectory(remotePath)
+	if err != nil {
+		return fmt.Errorf("rmdir: directory not empty: %s (use \"rm\" to remove recursively)", remotePath)
+	}
+	c.invalidateDirCache(path.Dir(remotePath))
+	return nil
+}
+
+// probeRemoteCaseSensitivity detects whether the remote filesystem is case-sensitive.
+// It creates a temp file with mixed-case name, stats with opposite case, and cleans up.
+// Returns true if case-sensitive (default on failure).
+func (c *Client) probeRemoteCaseSensitivity() bool {
+	workDir, err := c.sftpClient.Getwd()
+	if err != nil {
+		workDir = "/"
+	}
+	probeA := path.Join(workDir, "__my_sftp_case_probe_AaBb__")
+	probeB := path.Join(workDir, "__my_sftp_case_probe_aAbB__")
+
+	// Create temp file with mixed-case name
+	f, err := c.sftpClient.Create(probeA)
+	if err != nil {
+		log.Println("Warning: cannot probe remote case sensitivity (no write access), assuming case-sensitive")
+		return true
+	}
+	f.Close()
+
+	// Stat with opposite case
+	_, err = c.sftpClient.Stat(probeB)
+
+	// Cleanup
+	_ = c.sftpClient.Remove(probeA)
+
+	if err != nil {
+		// opposite-case stat failed → case-sensitive
+		return true
+	}
+	// opposite-case stat succeeded → case-insensitive
+	return false
 }
 
 // ExecuteRemote 在远程服务器执行命令（交互式）

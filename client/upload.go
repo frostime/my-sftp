@@ -114,12 +114,24 @@ func (c *Client) UploadSources(localSources []string, remoteDir string, opts *Up
 	remoteDir = c.ResolveRemotePath(remoteDir)
 
 	var tasks []transferTask
+	var allEmptyDirs []string
 	for _, source := range localSources {
-		sourceTasks, err := c.collectUploadSourceTasks(source, remoteDir, opts, len(localSources))
+		sourceTasks, sourceEmptyDirs, err := c.collectUploadSourceTasks(source, remoteDir, opts, len(localSources))
 		if err != nil {
 			return 0, err
 		}
 		tasks = append(tasks, sourceTasks...)
+		allEmptyDirs = append(allEmptyDirs, sourceEmptyDirs...)
+	}
+
+	if len(tasks) == 0 && len(allEmptyDirs) > 0 {
+		for _, dir := range allEmptyDirs {
+			if err := c.ensureRemoteDir(dir); err != nil {
+				return 0, err
+			}
+			fmt.Printf("✓ Created empty directory %s\n", dir)
+		}
+		return 0, nil
 	}
 
 	if len(tasks) == 0 {
@@ -127,11 +139,11 @@ func (c *Client) UploadSources(localSources []string, remoteDir string, opts *Up
 	}
 
 	if opts.Flatten {
-		if err := applyFlattenMapping(tasks, remoteDir); err != nil {
+		if err := c.applyFlattenMapping(tasks, remoteDir); err != nil {
 			return 0, err
 		}
 	}
-	if err := validateTargetCollisions(tasks); err != nil {
+	if err := c.validateTargetCollisions(tasks); err != nil {
 		return 0, err
 	}
 
@@ -153,9 +165,9 @@ func (c *Client) UploadSources(localSources []string, remoteDir string, opts *Up
 	return c.executeTasks(tasks, transferOpts)
 }
 
-func (c *Client) collectUploadSourceTasks(source, remoteDir string, opts *UploadOptions, sourceCount int) ([]transferTask, error) {
+func (c *Client) collectUploadSourceTasks(source, remoteDir string, opts *UploadOptions, sourceCount int) ([]transferTask, []string, error) {
 	if sourceCount > 1 && !opts.Flatten && usesReservedPreservePrefix(source, true) {
-		return nil, fmt.Errorf("source path uses reserved preserve prefix: %s", source)
+		return nil, nil, fmt.Errorf("source path uses reserved preserve prefix: %s", source)
 	}
 	if strings.ContainsAny(source, "*?[]") {
 		return c.collectUploadGlobTasks(source, remoteDir, opts)
@@ -164,22 +176,22 @@ func (c *Client) collectUploadSourceTasks(source, remoteDir string, opts *Upload
 	resolvedSource := c.ResolveLocalPath(source)
 	stat, err := os.Stat(resolvedSource)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	if stat.IsDir() {
 		if !opts.Recursive {
-			return nil, fmt.Errorf("%s is a directory, use 'put -r' for recursive upload", source)
+			return nil, nil, fmt.Errorf("%s is a directory, use 'put -r' for recursive upload", source)
 		}
 		dirRoot := remoteDir
 		if sourceCount > 1 {
 			dirRoot = path.Join(remoteDir, explicitLocalFilePreservePath(source, resolvedSource))
 		}
-		tasks, err := c.collectUploadTasks(resolvedSource, dirRoot, opts.MaxDepth, 0)
+		tasks, emptyDirs, err := c.collectUploadTasks(resolvedSource, dirRoot, opts.MaxDepth, 0)
 		if err != nil {
-			return nil, fmt.Errorf("collect tasks for %s: %w", source, err)
+			return nil, nil, fmt.Errorf("collect tasks for %s: %w", source, err)
 		}
-		return tasks, nil
+		return tasks, emptyDirs, nil
 	}
 
 	remoteFile := path.Join(remoteDir, path.Base(filepath.ToSlash(resolvedSource)))
@@ -192,10 +204,10 @@ func (c *Client) collectUploadSourceTasks(source, remoteDir string, opts *Upload
 		remotePath: remoteFile,
 		isUpload:   true,
 		size:       stat.Size(),
-	}}, nil
+	}}, nil, nil
 }
 
-func (c *Client) collectUploadGlobTasks(pattern, remotePath string, opts *UploadOptions) ([]transferTask, error) {
+func (c *Client) collectUploadGlobTasks(pattern, remotePath string, opts *UploadOptions) ([]transferTask, []string, error) {
 	if opts == nil {
 		opts = &UploadOptions{
 			ShowProgress: true,
@@ -228,18 +240,18 @@ func (c *Client) collectUploadGlobTasks(pattern, remotePath string, opts *Upload
 	// 使用 doublestar 支持 ** 递归匹配
 	matches, err := doublestar.FilepathGlob(fullPattern)
 	if err != nil {
-		return nil, fmt.Errorf("glob pattern: %w", err)
+		return nil, nil, fmt.Errorf("glob pattern: %w", err)
 	}
 
 	if len(matches) == 0 {
-		return nil, fmt.Errorf("no files match pattern: %s", pattern)
+		return nil, nil, fmt.Errorf("no files match pattern: %s", pattern)
 	}
 
 	entries := make([]transferSourceEntry, 0, len(matches))
 	for _, match := range matches {
 		stat, err := os.Stat(match)
 		if err != nil {
-			return nil, fmt.Errorf("stat match %s: %w", match, err)
+			return nil, nil, fmt.Errorf("stat match %s: %w", match, err)
 		}
 		entries = append(entries, transferSourceEntry{
 			path:  match,
@@ -251,6 +263,7 @@ func (c *Client) collectUploadGlobTasks(pattern, remotePath string, opts *Upload
 
 	// 收集所有上传任务
 	var tasks []transferTask
+	var emptyDirs []string
 	for _, entry := range entries {
 		match := entry.path
 
@@ -258,19 +271,20 @@ func (c *Client) collectUploadGlobTasks(pattern, remotePath string, opts *Upload
 			// 递归收集目录内的文件
 			mapped, relErr := filepath.Rel(globBaseAbs, match)
 			if relErr != nil {
-				return nil, fmt.Errorf("relative path for %s: %w", match, relErr)
+				return nil, nil, fmt.Errorf("relative path for %s: %w", match, relErr)
 			}
 			mappedSlash := joinPreservePath(globBasePrefix, filepath.ToSlash(mapped))
 			remoteSubDir := path.Join(remotePath, mappedSlash)
-			subTasks, err := c.collectUploadTasks(match, remoteSubDir, opts.MaxDepth, 0)
+			subTasks, subEmptyDirs, err := c.collectUploadTasks(match, remoteSubDir, opts.MaxDepth, 0)
 			if err != nil {
-				return nil, fmt.Errorf("collect tasks for %s: %w", match, err)
+				return nil, nil, fmt.Errorf("collect tasks for %s: %w", match, err)
 			}
 			tasks = append(tasks, subTasks...)
+			emptyDirs = append(emptyDirs, subEmptyDirs...)
 		} else {
 			mapped, relErr := filepath.Rel(globBaseAbs, match)
 			if relErr != nil {
-				return nil, fmt.Errorf("relative path for %s: %w", match, relErr)
+				return nil, nil, fmt.Errorf("relative path for %s: %w", match, relErr)
 			}
 			mappedSlash := joinPreservePath(globBasePrefix, filepath.ToSlash(mapped))
 			remoteFile := path.Join(remotePath, mappedSlash)
@@ -284,10 +298,10 @@ func (c *Client) collectUploadGlobTasks(pattern, remotePath string, opts *Upload
 	}
 
 	if len(tasks) == 0 {
-		return nil, fmt.Errorf("no files to upload")
+		return nil, emptyDirs, nil
 	}
 
-	return dedupeResolvedSourceTasks(tasks), nil
+	return dedupeResolvedSourceTasks(tasks), emptyDirs, nil
 }
 
 // UploadDir 递归上传整个目录

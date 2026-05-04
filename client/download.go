@@ -143,11 +143,11 @@ func (c *Client) DownloadSources(remoteSources []string, localDir string, opts *
 	}
 
 	if opts.Flatten {
-		if err := applyFlattenMapping(tasks, localDir); err != nil {
+		if err := c.applyFlattenMapping(tasks, localDir); err != nil {
 			return 0, err
 		}
 	}
-	if err := validateTargetCollisions(tasks); err != nil {
+	if err := c.validateTargetCollisions(tasks); err != nil {
 		return 0, err
 	}
 	if err := os.MkdirAll(localDir, 0755); err != nil {

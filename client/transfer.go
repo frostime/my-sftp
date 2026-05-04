@@ -21,20 +21,6 @@ const (
 	preserveParentMarker = "__my_sftp_parent__"
 )
 
-// formatBytes 将字节数格式化为人类可读的形式
-func formatBytes(bytes int64) string {
-	const unit = 1024
-	if bytes < unit {
-		return fmt.Sprintf("%d B", bytes)
-	}
-	div, exp := int64(unit), 0
-	for n := bytes / unit; n >= unit; n /= unit {
-		div *= unit
-		exp++
-	}
-	return fmt.Sprintf("%.1f %cB", float64(bytes)/float64(div), "KMGTPE"[exp])
-}
-
 // transferTask 表示单个传输任务
 type transferTask struct {
 	localPath  string // 本地文件路径
@@ -68,18 +54,25 @@ func taskSourceBaseName(task transferTask) string {
 	return path.Base(task.remotePath)
 }
 
-func flattenCollisionKey(task transferTask) string {
+func (c *Client) flattenCollisionKey(task transferTask) string {
 	base := taskSourceBaseName(task)
-	if !task.isUpload && (runtime.GOOS == "windows" || runtime.GOOS == "darwin") {
+	if task.isUpload {
+		if !c.remoteCaseSensitive {
+			return strings.ToLower(base)
+		}
+		return base
+	}
+	// Download: local OS determines case sensitivity
+	if runtime.GOOS == "windows" || runtime.GOOS == "darwin" {
 		return strings.ToLower(base)
 	}
 	return base
 }
 
-func applyFlattenMapping(tasks []transferTask, targetRoot string) error {
+func (c *Client) applyFlattenMapping(tasks []transferTask, targetRoot string) error {
 	seen := make(map[string]struct{}, len(tasks))
 	for _, task := range tasks {
-		key := flattenCollisionKey(task)
+		key := c.flattenCollisionKey(task)
 		if _, exists := seen[key]; exists {
 			return flattenCollisionError(taskSourceBaseName(task))
 		}
@@ -98,11 +91,16 @@ func applyFlattenMapping(tasks []transferTask, targetRoot string) error {
 	return nil
 }
 
-func targetConflictKey(task transferTask) string {
+func (c *Client) targetConflictKey(task transferTask) string {
 	if task.isUpload {
-		return path.Clean(task.remotePath)
+		key := path.Clean(task.remotePath)
+		if !c.remoteCaseSensitive {
+			key = strings.ToLower(key)
+		}
+		return key
 	}
 
+	// Download: local OS determines case sensitivity
 	key := filepath.ToSlash(filepath.Clean(task.localPath))
 	if runtime.GOOS == "windows" || runtime.GOOS == "darwin" {
 		key = strings.ToLower(key)
@@ -110,10 +108,10 @@ func targetConflictKey(task transferTask) string {
 	return key
 }
 
-func validateTargetCollisions(tasks []transferTask) error {
+func (c *Client) validateTargetCollisions(tasks []transferTask) error {
 	seen := make(map[string]string, len(tasks))
 	for _, task := range tasks {
-		target := targetConflictKey(task)
+		target := c.targetConflictKey(task)
 		if original, exists := seen[target]; exists {
 			return fmt.Errorf("duplicate target path in transfer plan: %s conflicts with %s", original, taskTargetPath(task))
 		}
@@ -521,7 +519,7 @@ func (c *Client) executeTasks(tasks []transferTask, opts *TransferOptions) (int,
 						fileName = path.Base(t.remotePath)
 					}
 					// 打印完成信息
-					fmt.Printf("\r\033[K✓ %s (%s)\n", fileName, formatBytes(t.size))
+					fmt.Printf("\r\033[K✓ %s (%s)\n", fileName, FormatSize(t.size))
 					globalBar.Describe(fmt.Sprintf("Transferring (%d/%d files)", count, totalFiles))
 				}
 			}
@@ -588,12 +586,13 @@ func (c *Client) collectDownloadTasks(remoteDir, localDir string, maxDepth, curr
 // remoteDir: 远程目录路径
 // maxDepth: 最大递归深度，-1表示无限
 // currentDepth: 当前深度（内部使用）
-func (c *Client) collectUploadTasks(localDir, remoteDir string, maxDepth, currentDepth int) ([]transferTask, error) {
+func (c *Client) collectUploadTasks(localDir, remoteDir string, maxDepth, currentDepth int) ([]transferTask, []string, error) {
 	var tasks []transferTask
+	var emptyDirs []string
 
 	entries, err := os.ReadDir(localDir)
 	if err != nil {
-		return nil, fmt.Errorf("read local dir %s: %w", localDir, err)
+		return nil, nil, fmt.Errorf("read local dir %s: %w", localDir, err)
 	}
 
 	for _, entry := range entries {
@@ -607,11 +606,12 @@ func (c *Client) collectUploadTasks(localDir, remoteDir string, maxDepth, curren
 			}
 
 			// 递归收集子目录任务
-			subTasks, err := c.collectUploadTasks(localPath, remotePath, maxDepth, currentDepth+1)
+			subTasks, subEmptyDirs, err := c.collectUploadTasks(localPath, remotePath, maxDepth, currentDepth+1)
 			if err != nil {
-				return nil, err
+				return nil, nil, err
 			}
 			tasks = append(tasks, subTasks...)
+			emptyDirs = append(emptyDirs, subEmptyDirs...)
 		} else {
 			info, err := entry.Info()
 			if err != nil {
@@ -626,7 +626,10 @@ func (c *Client) collectUploadTasks(localDir, remoteDir string, maxDepth, curren
 		}
 	}
 
-	return tasks, nil
+	if len(tasks) == 0 {
+		return nil, append(emptyDirs, remoteDir), nil
+	}
+	return tasks, emptyDirs, nil
 }
 
 // collectRemoteDirsForUpload 收集上传任务中需要创建的所有远程目录

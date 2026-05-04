@@ -123,14 +123,27 @@ func (c *Completer) ToReadline() readline.AutoCompleter {
 
 // ========================== Internal Helpers ==========================
 
-func removePrefix(candidates [][]rune, prefix string) [][]rune {
+// completeFromCandidates computes completion suffixes from a list of candidates.
+func completeFromCandidates(candidates []string, prefix string) [][]rune {
+	if len(candidates) == 0 {
+		return nil
+	}
+	if len(candidates) == 1 {
+		if len(candidates[0]) > len(prefix) {
+			return [][]rune{[]rune(candidates[0][len(prefix):])}
+		}
+		return [][]rune{[]rune(candidates[0])}
+	}
+	common := longestCommonPrefix(candidates)
+	if len(common) > len(prefix) {
+		return [][]rune{[]rune(common[len(prefix):])}
+	}
 	var results [][]rune
 	for _, candidate := range candidates {
-		candStr := string(candidate)
-		if strings.HasPrefix(candStr, prefix) {
-			results = append(results, []rune(candStr[len(prefix):]))
+		if len(candidate) > len(prefix) {
+			results = append(results, []rune(candidate[len(prefix):]))
 		} else {
-			results = append(results, candidate)
+			results = append(results, []rune(candidate))
 		}
 	}
 	return results
@@ -138,52 +151,19 @@ func removePrefix(candidates [][]rune, prefix string) [][]rune {
 
 // completeCommand 补全命令
 func (c *Completer) completeCommand(prefix string) [][]rune {
-	var matches [][]rune
+	var candidates []string
 	for _, cmd := range c.cmdList {
 		if strings.HasPrefix(cmd, prefix) {
-			matches = append(matches, []rune(cmd+" "))
+			candidates = append(candidates, cmd+" ")
 		}
 	}
-	// return matches
-	return removePrefix(matches, prefix)
+	return completeFromCandidates(candidates, prefix)
 }
 
 // completeRemotePath 补全远程路径
 func (c *Completer) completeRemotePath(prefix string) [][]rune {
 	candidates := c.client.ListCompletion(prefix)
-	if len(candidates) == 0 {
-		return nil
-	}
-
-	// 如果只有一个匹配，返回需要补全的后缀部分
-	if len(candidates) == 1 {
-		// 只返回未输入的部分
-		if len(candidates[0]) > len(prefix) {
-			suffix := candidates[0][len(prefix):]
-			return [][]rune{[]rune(suffix)}
-		}
-		return [][]rune{[]rune(candidates[0])}
-	}
-
-	// 多个匹配：计算公共前缀
-	common := longestCommonPrefix(candidates)
-	if len(common) > len(prefix) {
-		// 可以补全更多内容，返回差异部分
-		suffix := common[len(prefix):]
-		return [][]rune{[]rune(suffix)}
-	}
-
-	// 无法进一步补全，返回所有候选供用户选择（去掉已输入的prefix）
-	var matches [][]rune
-	for _, candidate := range candidates {
-		if len(candidate) > len(prefix) {
-			suffix := candidate[len(prefix):]
-			matches = append(matches, []rune(suffix))
-		} else {
-			matches = append(matches, []rune(candidate))
-		}
-	}
-	return matches
+	return completeFromCandidates(candidates, prefix)
 }
 
 // completeLocalPath 补全本地路径
@@ -215,46 +195,19 @@ func (c *Completer) completeLocalPath(prefix string) [][]rune {
 		return nil
 	}
 
-	// 收集所有匹配的名称（不包含前缀路径）
+	// 收集所有匹配的名称
 	var candidates []string
 	for _, entry := range entries {
 		name := entry.Name()
 		if strings.HasPrefix(strings.ToLower(name), strings.ToLower(partial)) {
-			// 只保存匹配的文件/目录名
 			if entry.IsDir() {
-				// 统一使用 / 作为路径分隔符（SFTP 兼容，避免 Windows \ 不被识别）
 				name += "/"
 			}
 			candidates = append(candidates, name)
 		}
 	}
 
-	if len(candidates) == 0 {
-		return nil
-	}
-
-	// 如果只有一个匹配，返回需要补全的部分（去掉已输入的partial）
-	if len(candidates) == 1 {
-		// 返回未输入的部分
-		suffix := candidates[0][len(partial):]
-		return [][]rune{[]rune(suffix)}
-	}
-
-	// 多个匹配：计算公共前缀
-	common := longestCommonPrefix(candidates)
-	if len(common) > len(partial) {
-		// 可以补全更多内容，返回差异部分
-		suffix := common[len(partial):]
-		return [][]rune{[]rune(suffix)}
-	}
-
-	// 无法进一步补全，返回所有候选供用户选择（去掉已输入的partial）
-	var matches [][]rune
-	for _, candidate := range candidates {
-		suffix := candidate[len(partial):]
-		matches = append(matches, []rune(suffix))
-	}
-	return matches
+	return completeFromCandidates(candidates, partial)
 }
 
 // longestCommonPrefix 计算字符串列表的最长公共前缀

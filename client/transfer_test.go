@@ -247,7 +247,7 @@ func TestCollectUploadGlobTasksDedupesGlobstarDirectoryMatches(t *testing.T) {
 	}
 
 	c := &Client{localWorkDir: root}
-	tasks, err := c.collectUploadGlobTasks(filepath.Join("dir", "**"), "/dest", &UploadOptions{Recursive: true, MaxDepth: -1})
+	tasks, _, err := c.collectUploadGlobTasks(filepath.Join("dir", "**"), "/dest", &UploadOptions{Recursive: true, MaxDepth: -1})
 	if err != nil {
 		t.Fatalf("collectUploadGlobTasks() error = %v", err)
 	}
@@ -279,7 +279,7 @@ func TestCollectUploadGlobTasksKeepsParentRelativePrefixInsideTargetRoot(t *test
 	}
 
 	c := &Client{localWorkDir: workDir}
-	tasks, err := c.collectUploadGlobTasks(filepath.Join("..", "logs", "*.log"), "/dest", &UploadOptions{Recursive: true, MaxDepth: -1})
+	tasks, _, err := c.collectUploadGlobTasks(filepath.Join("..", "logs", "*.log"), "/dest", &UploadOptions{Recursive: true, MaxDepth: -1})
 	if err != nil {
 		t.Fatalf("collectUploadGlobTasks() error = %v", err)
 	}
@@ -293,13 +293,19 @@ func TestCollectUploadGlobTasksKeepsParentRelativePrefixInsideTargetRoot(t *test
 	}
 }
 
+// testClient creates a minimal Client for testing collision key methods.
+func testClient(remoteCaseSensitive bool) *Client {
+	return &Client{remoteCaseSensitive: remoteCaseSensitive}
+}
+
 func TestApplyFlattenMappingDownload(t *testing.T) {
+	c := testClient(true)
 	tasks := []transferTask{
 		{remotePath: "/srv/a/readme.md", localPath: filepath.Join("out", "a", "readme.md")},
 		{remotePath: "/srv/b/config.yml", localPath: filepath.Join("out", "b", "config.yml")},
 	}
 
-	if err := applyFlattenMapping(tasks, "out"); err != nil {
+	if err := c.applyFlattenMapping(tasks, "out"); err != nil {
 		t.Fatalf("applyFlattenMapping() error = %v", err)
 	}
 
@@ -312,12 +318,13 @@ func TestApplyFlattenMappingDownload(t *testing.T) {
 }
 
 func TestApplyFlattenMappingUpload(t *testing.T) {
+	c := testClient(true)
 	tasks := []transferTask{
 		{localPath: filepath.Join("src", "a", "readme.md"), remotePath: "/dest/src/a/readme.md", isUpload: true},
 		{localPath: filepath.Join("src", "b", "config.yml"), remotePath: "/dest/src/b/config.yml", isUpload: true},
 	}
 
-	if err := applyFlattenMapping(tasks, "/dest"); err != nil {
+	if err := c.applyFlattenMapping(tasks, "/dest"); err != nil {
 		t.Fatalf("applyFlattenMapping() error = %v", err)
 	}
 
@@ -330,12 +337,13 @@ func TestApplyFlattenMappingUpload(t *testing.T) {
 }
 
 func TestApplyFlattenMappingDetectsDuplicateBasename(t *testing.T) {
+	c := testClient(true)
 	tasks := []transferTask{
 		{localPath: filepath.Join("src", "a", "readme.md"), remotePath: "/dest/src/a/readme.md", isUpload: true},
 		{localPath: filepath.Join("src", "b", "readme.md"), remotePath: "/dest/src/b/readme.md", isUpload: true},
 	}
 
-	err := applyFlattenMapping(tasks, "/dest")
+	err := c.applyFlattenMapping(tasks, "/dest")
 	if err == nil {
 		t.Fatal("expected duplicate basename error")
 	}
@@ -344,29 +352,40 @@ func TestApplyFlattenMappingDetectsDuplicateBasename(t *testing.T) {
 	}
 }
 
-func TestApplyFlattenMappingDetectsWindowsCaseFoldDuplicate(t *testing.T) {
-	if runtime.GOOS != "windows" && runtime.GOOS != "darwin" {
-		t.Skip("case-fold flatten collision behavior is platform-specific")
-	}
-
+func TestApplyFlattenMappingDetectsCaseInsensitiveRemoteDuplicate(t *testing.T) {
+	c := testClient(false) // case-insensitive remote
 	tasks := []transferTask{
-		{remotePath: "/srv/a/Readme.txt", localPath: filepath.Join("out", "a", "Readme.txt")},
-		{remotePath: "/srv/b/README.txt", localPath: filepath.Join("out", "b", "README.txt")},
+		{remotePath: "/srv/a/Readme.txt", localPath: filepath.Join("out", "a", "Readme.txt"), isUpload: true},
+		{remotePath: "/srv/b/README.txt", localPath: filepath.Join("out", "b", "README.txt"), isUpload: true},
 	}
 
-	err := applyFlattenMapping(tasks, "out")
+	err := c.applyFlattenMapping(tasks, "/srv")
 	if err == nil {
 		t.Fatal("expected case-insensitive flatten collision")
 	}
 }
 
+func TestApplyFlattenMappingCaseSensitiveRemoteNoDuplicate(t *testing.T) {
+	c := testClient(true) // case-sensitive remote
+	tasks := []transferTask{
+		{remotePath: "/srv/a/Readme.txt", localPath: filepath.Join("out", "a", "Readme.txt"), isUpload: true},
+		{remotePath: "/srv/b/README.txt", localPath: filepath.Join("out", "b", "README.txt"), isUpload: true},
+	}
+
+	err := c.applyFlattenMapping(tasks, "/srv")
+	if err != nil {
+		t.Fatalf("unexpected error on case-sensitive remote: %v", err)
+	}
+}
+
 func TestValidateTargetCollisionsDownload(t *testing.T) {
+	c := testClient(true)
 	tasks := []transferTask{
 		{remotePath: "/srv/a/readme.md", localPath: filepath.Join("out", "shared", "readme.md")},
 		{remotePath: "/srv/b/readme.md", localPath: filepath.Join("out", "shared", "readme.md")},
 	}
 
-	err := validateTargetCollisions(tasks)
+	err := c.validateTargetCollisions(tasks)
 	if err == nil {
 		t.Fatal("expected duplicate target collision")
 	}
@@ -376,49 +395,78 @@ func TestValidateTargetCollisionsDownloadCaseFold(t *testing.T) {
 	if runtime.GOOS != "windows" && runtime.GOOS != "darwin" {
 		t.Skip("case-fold collision behavior is platform-specific")
 	}
-
+	c := testClient(true)
 	tasks := []transferTask{
 		{remotePath: "/srv/a/readme.md", localPath: filepath.Join("out", "shared", "Readme.txt")},
 		{remotePath: "/srv/b/readme.md", localPath: filepath.Join("out", "shared", "README.txt")},
 	}
 
-	err := validateTargetCollisions(tasks)
+	err := c.validateTargetCollisions(tasks)
 	if err == nil {
 		t.Fatal("expected case-insensitive duplicate target collision")
 	}
 }
 
 func TestValidateTargetCollisionsDownloadPrefixConflict(t *testing.T) {
+	c := testClient(true)
 	tasks := []transferTask{
 		{remotePath: "/srv/a", localPath: filepath.Join("out", "shared", "a")},
 		{remotePath: "/srv/a/b.txt", localPath: filepath.Join("out", "shared", "a", "b.txt")},
 	}
 
-	err := validateTargetCollisions(tasks)
+	err := c.validateTargetCollisions(tasks)
 	if err == nil {
 		t.Fatal("expected prefix target collision")
 	}
 }
 
 func TestValidateTargetCollisionsUpload(t *testing.T) {
+	c := testClient(true)
 	tasks := []transferTask{
 		{localPath: filepath.Join("src", "a", "x.txt"), remotePath: "/dest/shared/x.txt", isUpload: true},
 		{localPath: filepath.Join("src", "b", "x.txt"), remotePath: "/dest/shared/x.txt", isUpload: true},
 	}
 
-	err := validateTargetCollisions(tasks)
+	err := c.validateTargetCollisions(tasks)
 	if err == nil {
 		t.Fatal("expected duplicate target collision")
 	}
 }
 
+func TestValidateTargetCollisionsUploadCaseSensitiveRemote(t *testing.T) {
+	c := testClient(true) // case-sensitive remote
+	tasks := []transferTask{
+		{localPath: filepath.Join("src", "a", "x.txt"), remotePath: "/dest/A.txt", isUpload: true},
+		{localPath: filepath.Join("src", "b", "x.txt"), remotePath: "/dest/a.txt", isUpload: true},
+	}
+
+	err := c.validateTargetCollisions(tasks)
+	if err != nil {
+		t.Fatalf("unexpected collision on case-sensitive remote: %v", err)
+	}
+}
+
+func TestValidateTargetCollisionsUploadCaseInsensitiveRemote(t *testing.T) {
+	c := testClient(false) // case-insensitive remote
+	tasks := []transferTask{
+		{localPath: filepath.Join("src", "a", "x.txt"), remotePath: "/dest/A.txt", isUpload: true},
+		{localPath: filepath.Join("src", "b", "x.txt"), remotePath: "/dest/a.txt", isUpload: true},
+	}
+
+	err := c.validateTargetCollisions(tasks)
+	if err == nil {
+		t.Fatal("expected collision on case-insensitive remote")
+	}
+}
+
 func TestValidateTargetCollisionsUploadPrefixConflict(t *testing.T) {
+	c := testClient(true)
 	tasks := []transferTask{
 		{localPath: filepath.Join("src", "a"), remotePath: "/dest/shared/a", isUpload: true},
 		{localPath: filepath.Join("src", "b.txt"), remotePath: "/dest/shared/a/b.txt", isUpload: true},
 	}
 
-	err := validateTargetCollisions(tasks)
+	err := c.validateTargetCollisions(tasks)
 	if err == nil {
 		t.Fatal("expected prefix target collision")
 	}

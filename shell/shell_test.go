@@ -96,3 +96,85 @@ func TestBuildUploadCommandOptions(t *testing.T) {
 		t.Fatalf("buildUploadCommandOptions() = %#v, want %#v", *got, *want)
 	}
 }
+
+func TestParseCommandLineBackslashOutsideQuotes(t *testing.T) {
+	got := parseCommandLine(`put C:\Users\file.txt`)
+	want := []string{"put", `C:\Users\file.txt`}
+	if len(got) != len(want) {
+		t.Fatalf("parseCommandLine() = %#v, want %#v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("parseCommandLine()[%d] = %q, want %q", i, got[i], want[i])
+		}
+	}
+}
+
+func TestParseCommandLineBackslashInsideDoubleQuotes(t *testing.T) {
+	// \P -> \P, \\" -> " (escape consumed, but quote stays open since last char was escaped quote)
+	got := parseCommandLine(`put "C:\Program Files\"`)
+	// After escaped \" the parser ends with open quote; trailing code writes it
+	// Result: C:\Program Files"
+	want := []string{"put", "C:\\Program Files\""}
+	if len(got) != len(want) {
+		t.Fatalf("parseCommandLine() = %#v, want %#v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("parseCommandLine()[%d] = %q, want %q", i, got[i], want[i])
+		}
+	}
+}
+
+func TestParseCommandLineBackslashInsideSingleQuotes(t *testing.T) {
+	// Single quotes: backslash is always literal
+	got := parseCommandLine(`put 'C:\Users\file.txt'`)
+	want := []string{"put", `C:\Users\file.txt`}
+	if len(got) != len(want) {
+		t.Fatalf("parseCommandLine() = %#v, want %#v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("parseCommandLine()[%d] = %q, want %q", i, got[i], want[i])
+		}
+	}
+}
+
+func TestParseCommandLineEscapedQuoteInsideDoubleQuotes(t *testing.T) {
+	got := parseCommandLine(`put "hello \"world"`)
+	want := []string{"put", `hello "world`}
+	if len(got) != len(want) {
+		t.Fatalf("parseCommandLine() = %#v, want %#v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("parseCommandLine()[%d] = %q, want %q", i, got[i], want[i])
+		}
+	}
+}
+
+func TestParseCommandLineEscapedBackslashInsideDoubleQuotes(t *testing.T) {
+	got := parseCommandLine(`put "path\\file"`)
+	want := []string{"put", `path\file`}
+	if len(got) != len(want) {
+		t.Fatalf("parseCommandLine() = %#v, want %#v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("parseCommandLine()[%d] = %q, want %q", i, got[i], want[i])
+		}
+	}
+}
+
+func TestParseCommandLineTrailingBackslashOutsideQuotes(t *testing.T) {
+	got := parseCommandLine(`put C:\path\`)
+	want := []string{"put", `C:\path\`}
+	if len(got) != len(want) {
+		t.Fatalf("parseCommandLine() = %#v, want %#v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("parseCommandLine()[%d] = %q, want %q", i, got[i], want[i])
+		}
+	}
+}

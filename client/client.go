@@ -36,6 +36,7 @@ type Client struct {
 	dirCache     map[string]*dirCacheEntry // 目录列表缓存
 	cacheMu      sync.RWMutex              // 缓存锁
 	bufferPool   *sync.Pool                // 统一的 buffer pool，减少 GC 压力
+	remoteCaseSensitive bool               // true = case-sensitive (Linux default)
 	// dirLocks       [DirLockShards]sync.Mutex // 分片锁，用于目录创建的并发控制, 引入 singleflight 后也许不需要了
 	dirCreateGroup singleflight.Group // 确保同一目录只创建一次
 }
@@ -71,7 +72,7 @@ func NewClient(addr string, config *ssh.ClientConfig) (*Client, error) {
 		localWd = "."
 	}
 
-	return &Client{
+	c := &Client{
 		sshClient:    sshClient,
 		sftpClient:   sftpClient,
 		workDir:      wd,
@@ -83,7 +84,16 @@ func NewClient(addr string, config *ssh.ClientConfig) (*Client, error) {
 				return &buf
 			},
 		},
-	}, nil
+	}
+
+	c.remoteCaseSensitive = c.probeRemoteCaseSensitivity()
+	if c.remoteCaseSensitive {
+		fmt.Println("ℹ Remote filesystem: case-sensitive")
+	} else {
+		fmt.Println("ℹ Remote filesystem: case-insensitive (case-variant filenames treated as same path)")
+	}
+
+	return c, nil
 }
 
 // Close 关闭连接

@@ -172,16 +172,31 @@ func parseCommandLine(line string) []string {
 
 	for _, r := range line {
 		if escaped {
-			// 上一个是反斜杠：当前字符一律当普通字符写入
-			current.WriteRune(r)
+			// Inside double quotes after backslash: only \" -> ", \\ -> \<space> -> space consume the backslash
+			if r == '"' || r == '\\' || r == ' ' || r == '\t' {
+				current.WriteRune(r)
+			} else {
+				current.WriteRune('\\')
+				current.WriteRune(r)
+			}
 			escaped = false
 			continue
 		}
 
 		switch r {
 		case '\\':
-			// 下一个字符被转义
-			escaped = true
+			if inQuote {
+				if quoteChar == '\'' {
+					// Inside single quotes: backslash is always literal
+					current.WriteRune(r)
+				} else {
+					// Inside double quotes: backslash is an escape prefix
+					escaped = true
+				}
+			} else {
+				// Outside quotes: backslash is a literal character
+				current.WriteRune(r)
+			}
 
 		case '"', '\'':
 			if inQuote {
@@ -224,28 +239,9 @@ func parseCommandLine(line string) []string {
 	return fields
 }
 
-// formatSize 格式化文件大小为人类可读格式
-func formatSize(size int64) string {
-	const (
-		KB = 1024
-		MB = KB * 1024
-		GB = MB * 1024
-		TB = GB * 1024
-	)
-
-	switch {
-	case size >= TB:
-		return fmt.Sprintf("%.2f TB", float64(size)/float64(TB))
-	case size >= GB:
-		return fmt.Sprintf("%.2f GB", float64(size)/float64(GB))
-	case size >= MB:
-		return fmt.Sprintf("%.2f MB", float64(size)/float64(MB))
-	case size >= KB:
-		return fmt.Sprintf("%.2f KB", float64(size)/float64(KB))
-	default:
-		return fmt.Sprintf("%d B", size)
-	}
-}
+// escapedWriteRune writes a rune after backslash escape in double quotes.
+// Only \" -> ", \\ -> \, and \<space> -> space trigger escape (consume backslash).
+// All other \x writes both backslash and x literally.
 
 // showHelp 显示帮助
 func (s *Shell) showHelp() {
@@ -293,7 +289,7 @@ Available commands:
   Remote File Operations:
     rm <path>             Remove file or directory
     mkdir <dir>           Create directory
-    rmdir <dir>           Remove directory
+    rmdir <dir>           Remove empty directory
     rename <old> <new>    Rename file or directory
     stat <path>           Show file information
 
@@ -363,7 +359,7 @@ func (s *Shell) cmdLs(args []string) error {
 
 		fmt.Printf("%s %10s  %s  %s\n",
 			typeChar,
-			formatSize(file.Size()),
+			client.FormatSize(file.Size()),
 			file.ModTime().Format("2006-01-02 15:04:05"),
 			file.Name(),
 		)
@@ -654,7 +650,16 @@ func (s *Shell) cmdMkdir(args []string) error {
 
 // cmdRmdir 删除目录
 func (s *Shell) cmdRmdir(args []string) error {
-	return s.cmdRm(args)
+	if len(args) < 1 {
+		return fmt.Errorf("usage: rmdir <dir>")
+	}
+	for _, dir := range args {
+		if err := s.client.RemoveDir(dir); err != nil {
+			return err
+		}
+		fmt.Printf("Removed directory: %s\n", dir)
+	}
+	return nil
 }
 
 // cmdRename 重命名
@@ -684,7 +689,7 @@ func (s *Shell) cmdStat(args []string) error {
 
 	fmt.Printf("Path:     %s\n", args[0])
 	fmt.Printf("Type:     %s\n", s.fileType(stat))
-	fmt.Printf("Size:     %s (%d bytes)\n", formatSize(stat.Size()), stat.Size())
+	fmt.Printf("Size:     %s (%d bytes)\n", client.FormatSize(stat.Size()), stat.Size())
 	fmt.Printf("Modified: %s\n", stat.ModTime().Format("2006-01-02 15:04:05"))
 	fmt.Printf("Mode:     %s\n", stat.Mode())
 
@@ -731,7 +736,7 @@ func (s *Shell) cmdLls(args []string) error {
 
 		fmt.Printf("%s %10s  %s  %s\n",
 			typeChar,
-			formatSize(file.Size()),
+			client.FormatSize(file.Size()),
 			file.ModTime().Format("2006-01-02 15:04:05"),
 			file.Name(),
 		)
