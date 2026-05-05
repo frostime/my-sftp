@@ -12,7 +12,7 @@
 
 ## State
 
-Implementation complete. All 6 phases done, 63/63 tests pass. Next: check spec-doc alignment, then commit spec-doc updates if needed.
+Spec-docs aligned. All changes committed to `fix/bugs-and-asymmetry`. Ready for review or merge.
 
 ## Key Files
 
@@ -22,6 +22,9 @@ Implementation complete. All 6 phases done, 63/63 tests pass. Next: check spec-d
 - `client/upload.go` — `collectUploadTasks`/`collectUploadSourceTasks`/`collectUploadGlobTasks` return `emptyDirs`; `UploadSources` handles empty dir creation
 - `shell/shell.go` — `parseCommandLine` backslash fix; `cmdRmdir` uses `RemoveDir`; `formatSize` deleted, uses `client.FormatSize`
 - `completer/completer.go` — `completeFromCandidates` extracted; `removePrefix` deleted
+- `spec-docs/architecture.md` — updated Module Map, Upload Data Flow, added Design Decision §6
+- `spec-docs/sftp-transfer.md` — updated Collect stage, Edge Cases, added case-sensitivity + rmdir sections
+- `spec-docs/cli-usage.md` — added connection log, backslash handling, Flatten case-sensitivity, M. Command Behavior Cases
 
 ## Knowledge
 
@@ -39,3 +42,4 @@ Implementation complete. All 6 phases done, 63/63 tests pass. Next: check spec-d
 - [2026-05-05T02:10] Design draft: spec.md + design.md written, awaiting gate
 - [2026-05-05T02:15] Plan: tasks.md written (6 phases, 14 tasks)
 - [2026-05-05T02:20] Implementation: all 6 phases complete, 63/63 tests pass
+- [2026-05-05T02:30] Spec-doc alignment: architecture.md, sftp-transfer.md, cli-usage.md updated
