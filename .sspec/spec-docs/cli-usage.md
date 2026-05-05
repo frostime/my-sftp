@@ -35,6 +35,20 @@ my-sftp [--version] <destination>
 - 未提供 `<destination>` 时，程序输出用法并退出
 - 连接成功后进入交互式 shell
 
+连接时自动检测远端文件系统大小写敏感性并输出日志：
+
+```text
+ℹ Remote filesystem: case-sensitive
+```
+
+或
+
+```text
+ℹ Remote filesystem: case-insensitive (case-variant filenames treated as same path)
+```
+
+此信息影响上传时的路径冲突检测行为（见 §Flatten Contract）。
+
 ## Shell Model
 
 shell 是一个状态化 REPL，始终维护两套工作目录：
@@ -48,6 +62,22 @@ shell 是一个状态化 REPL，始终维护两套工作目录：
 - `lcd <local_dir>`: 修改 local cwd
 - `pwd`: 显示 remote cwd
 - `lpwd`: 显示 local cwd
+
+### 路径反斜杠处理
+
+交互式 shell 中，`\` 在引号外为普通字符，Windows 用户可直接粘贴本地路径：
+
+```text
+put C:\Users\file.txt
+=> 解析为 ["put", "C:\\Users\\file.txt"]
+```
+
+引号内 `\` 仅对 `"`、`\`、空格触发转义：
+
+```text
+put "C:\Program Files\"
+=> 解析为 ["put", "C:\\Program Files\""]
+```
 
 ## Command Categories
 
@@ -184,6 +214,25 @@ glob 支持：
 - duplicate basename 是硬错误
 - 错误应在传输开始前发生
 - 错误提示应包含可操作修复建议
+
+大小写敏感性影响冲突检测：
+
+- 上传：由远端文件系统大小写敏感性决定（连接时自动检测并日志输出）
+- 下载：由本地 OS 决定（Windows/macOS 视为大小写不敏感）
+
+示例（上传到 case-insensitive remote）：
+
+```text
+put a/Readme.md b/README.md -d /srv/flat --flatten
+=> 失败：duplicate basename in --flatten mode: Readme.md
+```
+
+示例（上传到 case-sensitive remote）：
+
+```text
+put a/Readme.md b/README.md -d /srv/flat --flatten
+=> 成功：Readme.md 和 README.md 视为不同文件
+```
 
 典型提示：
 
@@ -453,6 +502,26 @@ put file.txt -d /srv/out --name nested/out.txt
 put a.txt b.txt -d /srv/out --name merged.txt
 => 失败：--name 只能用于单文件 source
 ```
+
+### M. Command Behavior Cases
+
+```text
+rmdir nonemptydir
+=> 失败：rmdir: directory not empty: nonemptydir (use "rm" to remove recursively)
+
+rmdir emptydir
+=> Removed directory: emptydir
+
+rm anydir
+=> Removing anydir ...
+=> Removed successfully
+```
+
+关键点：
+
+- `rmdir` 仅删除空目录，语义与 Unix rmdir 一致
+- `rm` 递归删除任意文件或目录（包括非空目录）
+- 非空目录的 `rmdir` 错误提示应引导用户使用 `rm`
 
 ### L. Inspection-Oriented Examples
 

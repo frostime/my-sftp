@@ -32,8 +32,8 @@ Shell (shell/shell.go)
 
 Client (client/client.go)
   ├─ wraps ssh.Client + sftp.Client
-  ├─ manages: workDir, localWorkDir, dirCache, bufferPool, singleflight.Group
-  └─ exposes: file ops, transfer engine, path resolution
+  ├─ manages: workDir, localWorkDir, dirCache, bufferPool, singleflight.Group, remoteCaseSensitive
+  └─ exposes: file ops, transfer engine, path resolution, FormatSize
 
 Completer (completer/completer.go)
   ├─ interface: ClientInterface (ListCompletion, GetLocalwd)
@@ -50,7 +50,8 @@ Shell.cmdPut
   → client.UploadSources          (client/upload.go)
     → collectUploadSourceTasks    per source: explicit path or glob
       → collectUploadGlobTasks    (glob: doublestar.FilepathGlob)
-      → collectUploadTasks        (dir: recursive walk)
+      → collectUploadTasks        (dir: recursive walk → tasks + emptyDirs)
+    → [early return if 0 tasks + emptyDirs: ensureRemoteDir + print → done]
     → applyFlattenMapping         (if --flatten)
     → validateTargetCollisions    (pre-flight duplicate check)
     → collectRemoteDirsForUpload  → ensureRemoteDirsExist (singleflight)
@@ -105,7 +106,13 @@ Default (preserve): source-relative path structure is maintained under target ro
 
 **Why**: Preserve is safe default for directory trees. Flatten is convenience for flat dumps. Collision detection happens before any transfer starts.
 
-### 5. CLI option parsing in Shell, not Client
+### 6. Remote filesystem case-sensitivity detection
+
+`probeRemoteCaseSensitivity` in `client/common.go` detects remote FS case sensitivity at connection time by creating a temp file with mixed-case name, stat-ing the opposite case, and cleaning up. Result stored in `Client.remoteCaseSensitive` and logged to user. Used by collision key methods (`targetConflictKey`, `flattenCollisionKey`) in `client/transfer.go` to decide whether to lowercase upload targets.
+
+**Why**: Remote Linux is case-sensitive; remote macOS is not. Using `runtime.GOOS` for upload targets was wrong — upload target is a remote path, not a local one.
+
+### 7. CLI option parsing in Shell, not Client
 
 `parseTransferCLIArgs` lives in `shell/shell.go`. Client receives structured `UploadOptions`/`DownloadOptions`.
 

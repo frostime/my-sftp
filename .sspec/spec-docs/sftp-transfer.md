@@ -20,7 +20,7 @@ Source resolution → Task collection → Pre-flight validation → Directory pr
 | Stage | Function | File | Responsibility |
 |-------|----------|------|---------------|
 | 1. Resolve | `collectUploadSourceTasks` / `collectDownloadSourceTasks` | upload.go / download.go | Explicit path stat or glob expansion |
-| 2. Collect | `collectUploadTasks` / `collectDownloadTasks` | transfer.go | Recursive dir walk → `[]transferTask` |
+| 2. Collect | `collectUploadTasks` / `collectDownloadTasks` | transfer.go | Recursive dir walk → `[]transferTask` + `[]string` (emptyDirs for upload) |
 | 3. Validate | `applyFlattenMapping` + `validateTargetCollisions` | transfer.go | Flatten mapping, duplicate target detection |
 | 4. Prep dirs | `collectRemoteDirsForUpload` + `ensureRemoteDirsExist` | transfer.go / upload.go | Singleflight-protected `MkdirAll` |
 | 5. Execute | `executeTasks` | transfer.go | Semaphore-concurrent goroutines, progress bar, error aggregation |
@@ -47,6 +47,7 @@ Progress adapts via `globalBar` (nil → per-file mode, non-nil → global mode)
 - Dynamic description: `Transferring <filename> (n/N files)`
 - Completion line: `✓ <filename> (<size>)` printed above progress bar
 - Uses `\r\033[K` to clear and reprint
+- Size formatted via `FormatSize` in `client/common.go` (binary units, `%.1f` precision)
 
 ## Concurrency Model
 
@@ -86,7 +87,7 @@ executeTasks(tasks, opts)
 | Dir source without `-r` | Error: suggest `put -r` / `get -r` | `collectUploadSourceTasks` / `collectDownloadSourceTasks` |
 | Remote path is a directory | Auto-append basename to remote path | `UploadWithProgress` |
 | Network interruption | Transfer fails, error collected, others continue | `executeTasks` error aggregation |
-| Upload empty directory | Error: "no files found in directory" | `UploadSources` |
+| Upload empty directory | Remote dir created, 0 files transferred | `UploadSources` early-return + `ensureRemoteDir` |
 | Download empty directory | Local dir created, 0 files transferred | `DownloadDir` special-cases `count == 0` |
 
 ### `--name` bypasses the pipeline
@@ -119,6 +120,16 @@ Step 3 is why `dir/**` (which matches both `dir` and `dir/file`) does not produc
 ### Defensive directory creation in `UploadWithProgress`
 
 `UploadWithProgress` calls `ensureRemoteDir(parent)` even though `UploadSources` already pre-creates all needed directories. This is intentional: `--name` routes directly to `UploadWithProgress` and skips `UploadSources`. Removing the inner call would break `--name` uploads. Do not "clean up" this redundancy.
+
+### Case-sensitivity in collision detection
+
+[`targetConflictKey`](client/transfer.go) and [`flattenCollisionKey`](client/transfer.go) are [`Client`](client/client.go) methods that use `remoteCaseSensitive` for upload targets and `runtime.GOOS` for download targets. [`probeRemoteCaseSensitivity`](client/common.go) detects remote FS behavior at connection time.
+
+Upload collision key: remote path lowercased only if `remoteCaseSensitive == false`. Download collision key: local path lowercased only on Windows/macOS.
+
+### `rmdir` semantics
+
+[`RemoveDir`](client/common.go) uses [`sftpClient.RemoveDirectory`](https://pkg.go.dev/github.com/pkg/sftp#Client.RemoveDirectory) — SFTP RMDIR, empty-only by protocol. Non-empty directories return error with hint to use `rm`.
 
 ### Windows volume marker
 
