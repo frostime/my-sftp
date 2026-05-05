@@ -132,7 +132,7 @@ func completeFromCandidates(candidates []string, prefix string) [][]rune {
 		if len(candidates[0]) > len(prefix) {
 			return [][]rune{[]rune(candidates[0][len(prefix):])}
 		}
-		return [][]rune{[]rune(candidates[0])}
+		return [][]rune{[]rune("")}
 	}
 	common := longestCommonPrefix(candidates)
 	if len(common) > len(prefix) {

@@ -325,8 +325,9 @@ func (c *Client) probeRemoteCaseSensitivity() bool {
 	if err != nil {
 		workDir = "/"
 	}
-	probeA := path.Join(workDir, "__my_sftp_case_probe_AaBb__")
-	probeB := path.Join(workDir, "__my_sftp_case_probe_aAbB__")
+	suffix := fmt.Sprintf("%d", os.Getpid())
+	probeA := path.Join(workDir, "__my_sftp_case_probe_AaBb_"+suffix+"__")
+	probeB := path.Join(workDir, "__my_sftp_case_probe_aAbB_"+suffix+"__")
 
 	// Create temp file with mixed-case name
 	f, err := c.sftpClient.Create(probeA)
@@ -335,19 +336,21 @@ func (c *Client) probeRemoteCaseSensitivity() bool {
 		return true
 	}
 	f.Close()
+	defer func() { _ = c.sftpClient.Remove(probeA) }()
 
 	// Stat with opposite case
 	_, err = c.sftpClient.Stat(probeB)
-
-	// Cleanup
-	_ = c.sftpClient.Remove(probeA)
-
-	if err != nil {
-		// opposite-case stat failed → case-sensitive
+	if err == nil {
+		// opposite-case stat succeeded → case-insensitive
+		return false
+	}
+	if os.IsNotExist(err) {
+		// opposite-case file does not exist → case-sensitive
 		return true
 	}
-	// opposite-case stat succeeded → case-insensitive
-	return false
+	// stat failed for other reason (network, permission) → conservative default
+	log.Printf("Warning: case sensitivity probe stat failed (%v), assuming case-sensitive", err)
+	return true
 }
 
 // ExecuteRemote 在远程服务器执行命令（交互式）
